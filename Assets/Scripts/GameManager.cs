@@ -42,6 +42,14 @@ public class GameManager : MonoBehaviour
     [SerializeField] private AudioClip errorClip;
     [Tooltip("通关音效")]
     [SerializeField] private AudioClip finishClip;
+    [Tooltip("关卡失败音效（血量归零），对称 finishClip，经 FeedbackManager.Fail() 播放")]
+    [SerializeField] private AudioClip failClip;
+
+    [Header("生命值与失败弹窗（Inspector 拖拽绑定）")]
+    [Tooltip("关卡生命值控制器（挂载在场景中，持有 3 个血点 Image）")]
+    [SerializeField] private LivesController livesController;
+    [Tooltip("失败弹窗（ModalPopup 预制体摆放在场景中，默认隐藏）")]
+    [SerializeField] private ModalPopup failPopup;
 
     private List<BlockController> allBlocks = new List<BlockController>();
     private int currentCatCount; // 当前已锁定小猫数（given + 双击锁定），替代 FindAll 实时遍历，O(1) 读取
@@ -53,6 +61,8 @@ public class GameManager : MonoBehaviour
     public float doubleClickThreshold = 0.3f;
     [Tooltip("双击错误格子时状态栏错误提示的持续时长（秒）")]
     public float errorHintDuration = 1.5f;
+    [Tooltip("血量归零后，延迟多久弹出失败弹窗（秒）。应大于错误抖动时长(0.4s)，让最后一次犯错的单格错误反馈（抖动/红框/音效/HUD文案）先播完再弹窗")]
+    public float failPopupDelay = 0.5f;
 
     // ====== 单击/双击/滑动 协调状态 ======
     private bool isPointerDown;            // 当前是否处于按下（可能滑动）状态
@@ -62,7 +72,9 @@ public class GameManager : MonoBehaviour
     private BlockController pendingToggleBlock; // 按下后待应用的 cross 翻转格（延迟判定期内尚未显示，双击时取消以杜绝闪烁）
     private Coroutine pendingToggleRoutine;     // 延迟应用 cross 翻转的协程
     private Coroutine errorHintRoutine;    // 当前错误提示协程（用于重启时先停掉）
+    private Coroutine failPopupRoutine;    // 延迟弹出失败弹窗的协程（待单格错误反馈播完再弹，用于重启时先停掉）
     private bool isLevelCompleted;    // 本关已通关：起舞/按钮弹出期间锁定棋盘输入，避免制造新错误格与"已通关"冲突
+    private bool isLevelFailed;       // 本关已失败：血量归零后锁定棋盘输入，与 isLevelCompleted 互斥（PRD §7.5）
 
     void Start()
     {
@@ -76,7 +88,11 @@ public class GameManager : MonoBehaviour
 
         // 注入音频素材到统一反馈中心（被本 MonoBehaviour 引用即随场景预加载，杜绝高频操作时的动态加载滞后）
         if (FeedbackManager.Instance != null)
-            FeedbackManager.Instance.Init(excludeClip, successClip, errorClip, finishClip);
+            FeedbackManager.Instance.Init(excludeClip, successClip, errorClip, finishClip, failClip);
+
+        // 订阅血量归零事件：LivesController 不反向依赖 GameManager，经事件解耦触发失败流程（PRD §7.1）
+        if (livesController != null)
+            livesController.OnLivesZero += HandleLevelFailed;
 
         if (loadedLevels == null || loadedLevels.Count == 0)
         {
@@ -144,6 +160,12 @@ public class GameManager : MonoBehaviour
         if (successClip == null) Debug.LogWarning("[GameManager] successClip 未绑定，解锁成功将无声！");
         if (errorClip == null) Debug.LogWarning("[GameManager] errorClip 未绑定，点错将无声！");
         if (finishClip == null) Debug.LogWarning("[GameManager] finishClip 未绑定，通关将无声！");
+        if (failClip == null) Debug.LogWarning("[GameManager] failClip 未绑定，关卡失败将无声！");
+
+        // 生命值与失败弹窗引用校验
+        if (livesController == null) Debug.LogError("[GameManager] livesController 未绑定（请拖入挂有 LivesController 的场景对象）！");
+        if (failPopup == null) Debug.LogError("[GameManager] failPopup 未绑定（请拖入 ModalPopup 预制体实例）！");
+        WarnIfNoRaycaster(failPopup != null ? failPopup.transform : null, "failPopup");
     }
 
     // 子 Canvas 必须各自带 GraphicRaycaster 才能接收点击；缺失则报错指引补加。
@@ -214,6 +236,11 @@ public class GameManager : MonoBehaviour
         allBlocks.Clear();
         currentCatCount = 0; // 重置计数器，等待 given 猫与玩家双击重新累加
         isLevelCompleted = false; // 新关卡开始，解锁棋盘输入
+        isLevelFailed = false; // 复位失败锁，允许新关卡正常交互（PRD §7.5）
+        // 重开/切关时复位血量并隐藏失败弹窗（restart 也走本路径，全新棋盘不保留失败前状态，PRD F16）
+        if (livesController != null) livesController.ResetLives();
+        if (failPopupRoutine != null) { StopCoroutine(failPopupRoutine); failPopupRoutine = null; } // 停掉待弹的延迟协程，避免重开后又弹出过时弹窗
+        if (failPopup != null) failPopup.Hide();
 
         // 顺延一帧：让回收的 SetActive(false) 在本帧渲染前生效，再生成新关卡格子。
         // 用 yield return null（下一帧 Update 后）而非 WaitForEndOfFrame（帧末渲染后），
@@ -334,9 +361,9 @@ public class GameManager : MonoBehaviour
     public void HandlePointerDown(BlockController block)
     {
         if (block == null) return;
-        // 本关已通关：起舞/按钮弹出期间锁定棋盘输入，不处理任何状态变更，
-        // 仅给一致的轻触反馈（与锁定格点击一致），避免通关后制造新错误格与"已通关"冲突
-        if (isLevelCompleted)
+        // 本关已通关/已失败：终态期间锁定棋盘输入，不处理任何状态变更，
+        // 仅给一致的轻触反馈（与锁定格点击一致），避免终态后制造新错误格与状态冲突（PRD §7.5）
+        if (isLevelCompleted || isLevelFailed)
         {
             FeedbackManager.Instance?.Tap();
             return;
@@ -483,6 +510,9 @@ public class GameManager : MonoBehaviour
             block.LockAsError();     // 边框染红 + 本关锁定，不再响应点击
             ShowErrorHint();         // HUD 强切 "Not Cat!!!" 并放大回弹
             FeedbackManager.Instance?.Error(); // 错误音效 + 触觉
+            // 扣血放最后：最后一次犯错的完整单格错误反馈已播完，再扣血/触发失败（PRD F7）。
+            // LoseLife 内部归零时经 OnLivesZero 事件触发 HandleLevelFailed，本处不直接判失败。
+            if (livesController != null) livesController.LoseLife();
         }
     }
 
@@ -509,6 +539,86 @@ public class GameManager : MonoBehaviour
     {
         currentLevelIndex++;
         LoadLevel(currentLevelIndex);
+    }
+
+    // ================= 关卡失败与复活流程（PRD §3.3 / §3.5 / §4.2-4.4）=================
+
+    /// <summary>
+    /// 血量归零触发（由 LivesController.OnLivesZero 事件调用）：
+    /// 锁棋盘 → 取消进行中协程 → 失败音效 → 显示失败弹窗。
+    /// 与 CheckRules 胜利分支对称，二者经 isLevelCompleted/isLevelFailed 互斥（PRD §7.5）。
+    /// </summary>
+    private void HandleLevelFailed()
+    {
+        isLevelFailed = true; // 锁棋盘输入（HandlePointerDown 已拦截）
+
+        // 取消进行中的交互协程，避免失败时残留补间/提示与弹窗打架（PRD F10）
+        CancelPendingToggle();
+        if (errorHintRoutine != null)
+        {
+            StopCoroutine(errorHintRoutine);
+            errorHintRoutine = null;
+        }
+
+        // 失败音效 + 触觉立即播（与单格 Error 叠加，PRD F19/§6）
+        FeedbackManager.Instance?.Fail();
+
+        // 延迟显示失败弹窗：等最后一次犯错的单格错误反馈（抖动 0.4s / 红框 / 音效 / HUD"Not Cat!!!"）播完再弹，
+        // 避免弹窗瞬间盖住反馈。延迟期间 isLevelFailed 已锁棋盘，玩家完整看到最后一次犯错的反馈。
+        if (failPopup != null)
+        {
+            var config = new ModalConfig("Level Failed", new List<ModalButtonDef>
+            {
+                new ModalButtonDef("3 more lives", OnReviveRequested),
+                new ModalButtonDef("restart", OnRestartRequested),
+            });
+            if (failPopupRoutine != null) StopCoroutine(failPopupRoutine);
+            failPopupRoutine = StartCoroutine(ShowFailPopupAfter(failPopupDelay, config));
+        }
+    }
+
+    /// <summary>延迟弹出失败弹窗：待单格错误反馈播完（failPopupDelay，默认 0.5s）再 Show。</summary>
+    private IEnumerator ShowFailPopupAfter(float delay, ModalConfig config)
+    {
+        yield return new WaitForSeconds(delay);
+        failPopupRoutine = null;
+        if (failPopup != null) failPopup.Show(config);
+    }
+
+    /// <summary>restart 按钮：重开本关，全新棋盘不保留失败前状态（PRD F16）。
+    /// LoadLevel 内部会 ResetLives、复位 isLevelFailed、隐藏弹窗。</summary>
+    private void OnRestartRequested()
+    {
+        LoadLevel(currentLevelIndex);
+    }
+
+    /// <summary>3 more lives 按钮：走广告接口，发放奖励后补血+保留棋盘继续（PRD F17）。
+    /// 本期 NullAdProvider 直接调 onRewarded；后续接真实 SDK 调用方零改动。
+    /// 失败/取消则弹窗保持打开，玩家可再次选择。</summary>
+    private void OnReviveRequested()
+    {
+        AdManager.Instance?.ShowRewardedAd(
+            onRewarded: () =>
+            {
+                if (failPopup != null) failPopup.Hide();
+                isLevelFailed = false; // 解锁棋盘输入
+                if (livesController != null) livesController.RefillLives(); // 补血满，复位归零节流
+                // 保留棋盘所有状态（猫 / cross / 错误锁定格），玩家从当前进度继续（PRD F17/F18）
+            },
+            onFailedOrClosed: () =>
+            {
+                // 广告未发放奖励：弹窗保持打开，玩家可再次选择 restart 或 3 more lives
+            });
+    }
+
+    // 失败弹窗显示时屏蔽 Android 物理返回键 / Escape：玩家只能点 restart / 3 more lives，
+    // 避免"血量 0、棋盘锁定、弹窗消失"的死局（PRD F15.1）
+    private void Update()
+    {
+        if (isLevelFailed && Input.GetKeyDown(KeyCode.Escape))
+        {
+            // 吞掉，不做任何操作
+        }
     }
 
     // 通关后延时 0.5s 给视觉缓冲，再让下一关按钮弹性亮相；亮相后才恢复可点击
