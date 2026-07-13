@@ -37,6 +37,7 @@ public class FeedbackManager : MonoBehaviour
     public AudioClip successClip;  // 双击解锁成功
     public AudioClip errorClip;    // 双击解锁失败/点错
     public AudioClip finishClip;   // 通关
+    public AudioClip failClip;     // 关卡失败（血量归零），对称 finishClip
 
     [Header("音频参数")]
     public float basePitch = 1f;
@@ -95,14 +96,15 @@ public class FeedbackManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 由 GameManager.Start 调用，把 Inspector 绑定的 4 个 AudioClip 注入进来（实现预加载引用）。
+    /// 由 GameManager.Start 调用，把 Inspector 绑定的 5 个 AudioClip 注入进来（实现预加载引用）。
     /// </summary>
-    public void Init(AudioClip exclude, AudioClip success, AudioClip error, AudioClip finish)
+    public void Init(AudioClip exclude, AudioClip success, AudioClip error, AudioClip finish, AudioClip fail)
     {
         if (exclude != null) excludeClip = exclude;
         if (success != null) successClip = success;
         if (error != null) errorClip = error;
         if (finish != null) finishClip = finish;
+        if (fail != null) failClip = fail;
     }
 
     // ===================== 静音开关 API（设置界面调用） =====================
@@ -164,6 +166,14 @@ public class FeedbackManager : MonoBehaviour
     {
         Play(finishClip);
         Haptic(NativeHapticDriver.HapticType.Success);
+    }
+
+    /// <summary>场景5：血量归零，关卡失败——对称 Finish()，用 Error 通知震动强化失败仪式感。
+    /// 与单格 Error()（双击点错的轻刻度）区分：单格点错是 Selection 轻刻度，关卡失败是 Error 通知。</summary>
+    public void Fail()
+    {
+        Play(failClip);
+        Haptic(NativeHapticDriver.HapticType.Error);
     }
 
     // ===================== 内部播放原语 =====================
