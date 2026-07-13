@@ -1404,7 +1404,7 @@ MonoBehaviour:
   failPopup: {fileID: 751730577}
   doubleClickThreshold: 0.2
   errorHintDuration: 1.5
-  failPopupDelay: 1.5
+  failPopupDelay: 1
 --- !u!4 &1262465751
 Transform:
   m_ObjectHideFlags: 0
