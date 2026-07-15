@@ -33,6 +33,73 @@ public static class MapSolver
         return null;
     }
 
+    /// <summary>
+    /// 枚举当前关卡的所有合法解（多解判定 / 魔法棒 / 双击沿解判定 / 通关校验共用）。
+    /// 与 <see cref="Solve"/> 同一套回溯规则，但不命中即返回，而是收集全部解。
+    /// cap 截断：解数超过 cap 时停止枚举（多解判定仍成立；阵营判定按已枚举子集，极端关可能不准，告警提示）。
+    /// 返回 List&lt;bool[]&gt;（每个长度 N*N，true=正解猫）；无解返回空列表。
+    /// </summary>
+    public static System.Collections.Generic.List<bool[]> EnumerateAll(int gridSize, int[] map, int[] givenCats, int paletteLength, int cap = 128)
+    {
+        var results = new System.Collections.Generic.List<bool[]>();
+        bool[] current = new bool[gridSize * gridSize];
+        bool[] colUsed = new bool[gridSize];
+        bool[] colorUsed = new bool[paletteLength > 0 ? paletteLength : 20];
+
+        // 预处理：given → 每行锁定列（与 Solve 同源，保证所有解必含 given 位置）
+        int[] givenColForRow = new int[gridSize];
+        for (int i = 0; i < gridSize; i++) givenColForRow[i] = -1;
+        if (givenCats != null)
+        {
+            foreach (int idx in givenCats)
+            {
+                int r = idx / gridSize;
+                int c = idx % gridSize;
+                givenColForRow[r] = c;
+            }
+        }
+
+        EnumerateBacktrack(0, gridSize, map, current, colUsed, colorUsed, givenColForRow, results, cap);
+
+        if (results.Count >= cap)
+            UnityEngine.Debug.LogWarning($"[MapSolver] 第该关合法解数 ≥ {cap}，已截断枚举；阵营/多解判定按已枚举子集，极端关可能不准。");
+        return results;
+    }
+
+    static void EnumerateBacktrack(int row, int gridSize, int[] map, bool[] current, bool[] colUsed, bool[] colorUsed, int[] givenColForRow, System.Collections.Generic.List<bool[]> results, int cap)
+    {
+        if (results.Count >= cap) return; // 截断传播
+        if (row == gridSize)
+        {
+            results.Add((bool[])current.Clone());
+            return;
+        }
+
+        int fixedC = givenColForRow[row];
+        for (int c = 0; c < gridSize; c++)
+        {
+            if (fixedC != -1 && c != fixedC) continue;
+
+            int idx = row * gridSize + c;
+            int color = map[idx];
+
+            if (colUsed[c] || (color < colorUsed.Length && colorUsed[color])) continue;
+            if (IsAnimalAdjacent(row, c, gridSize, current)) continue;
+
+            current[idx] = true;
+            colUsed[c] = true;
+            if (color < colorUsed.Length) colorUsed[color] = true;
+
+            EnumerateBacktrack(row + 1, gridSize, map, current, colUsed, colorUsed, givenColForRow, results, cap);
+
+            current[idx] = false;
+            colUsed[c] = false;
+            if (color < colorUsed.Length) colorUsed[color] = false;
+
+            if (results.Count >= cap) return; // 截断传播
+        }
+    }
+
     static bool Backtrack(int row, int gridSize, int[] map, bool[] result, bool[] colUsed, bool[] colorUsed, int[] givenColForRow)
     {
         if (row == gridSize) return true;

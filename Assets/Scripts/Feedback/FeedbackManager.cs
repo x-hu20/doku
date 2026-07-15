@@ -41,6 +41,8 @@ public class FeedbackManager : MonoBehaviour
 
     [Header("音频参数")]
     public float basePitch = 1f;
+    [Tooltip("通关音 finishClip 延迟播放比例：= successClip.length × 此值 后叠入。0=与 successClip 同时播，1=等其完全播完。默认 0.5 让通关音在格子音播到大半时叠入，听感更即时")]
+    [SerializeField] private float finishDelayRatio = 0.5f;
 
     [Header("开关（持久化 PlayerPrefs）")]
     public bool isAudioEnabled = true;
@@ -174,6 +176,32 @@ public class FeedbackManager : MonoBehaviour
     {
         Play(failClip);
         Haptic(NativeHapticDriver.HapticType.Error);
+    }
+
+    /// <summary>通关音效延迟到当前格子音效（successClip）播完<paramref name="比例"/>后再播，避免与双击/魔法棒锁猫的 Success 叠加。
+    /// 由 GameManager.CheckRules 胜利分支调用。successClip 为空则立即播 finishClip。
+    /// 延迟 = successClip.length × finishDelayRatio（默认 0.5，Inspector 可调，嫌慢调小、嫌叠调大）。</summary>
+    public void FinishAfterSuccessClip()
+    {
+        StartCoroutine(DelayedFeedback(finishClip, successClip, finishDelayRatio, NativeHapticDriver.HapticType.Success));
+    }
+
+    /// <summary>失败音效延迟到当前格子音效（errorClip）播完后再播，避免与双击点错的 Error 叠加。
+    /// 由 GameManager.HandleLevelFailed 调用。errorClip 为空则立即播 failClip。</summary>
+    public void FailAfterErrorClip()
+    {
+        StartCoroutine(DelayedFeedback(failClip, errorClip, 1f, NativeHapticDriver.HapticType.Error));
+    }
+
+    private System.Collections.IEnumerator DelayedFeedback(AudioClip target, AudioClip waitClip, float ratio, NativeHapticDriver.HapticType haptic)
+    {
+        // 等待当前格子音效播到指定比例：PlayOneShot 时长 = clip.length / pitch（pitch=basePitch）
+        if (waitClip != null)
+            yield return new WaitForSeconds(waitClip.length * Mathf.Clamp01(ratio) / Mathf.Max(0.01f, basePitch));
+        else
+            yield return null;
+        Play(target);
+        Haptic(haptic);
     }
 
     // ===================== 内部播放原语 =====================

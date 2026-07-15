@@ -110,6 +110,34 @@ public static class TweenRunner
         t.localScale = Vector3.one;
     }
 
+    // ===================== 场景 6：按钮引导脉冲（循环 1 → peak → 1，吸引点击）=====================
+    /// <summary>持续脉冲缩放，引导玩家点击。由调用方在点击/隐藏时调 <see cref="Stop"/> 停止并复位。</summary>
+    /// <param name="t">按钮 Transform</param>
+    /// <param name="peak">脉冲峰值倍率（相对当前 scale）</param>
+    /// <param name="halfMs">单程时长（毫秒），一个完整脉冲 = 2×halfMs</param>
+    public static void PulseLoop(Transform t, float peak = 1.12f, float halfMs = 280f)
+    {
+        if (t == null) return;
+        RunExclusive(t, PulseLoopRoutine(t, peak, halfMs / 1000f));
+    }
+
+    private static IEnumerator PulseLoopRoutine(Transform t, float peak, float halfSec)
+    {
+        Vector3 baseScale = t.localScale;
+        float peakX = baseScale.x * peak;
+        while (true)
+        {
+            yield return ScaleTo(t, peakX, halfSec); // 放大（EaseOutCubic，起步快后缓）
+            yield return ScaleTo(t, baseScale.x, halfSec); // 回落
+        }
+    }
+
+    /// <summary>停止指定 Transform 上的活动补间（含 PulseLoop）。不复位 scale——调用方需自行复位到目标值。</summary>
+    public static void Stop(Transform t)
+    {
+        Kill(t);
+    }
+
     // ===================== 顶部 HUD 文本放大回弹 =====================
     public static void TextPunch(Transform t, float peak = 1.3f, float duration = 0.25f)
     {

@@ -28,10 +28,6 @@ public class GameManager : MonoBehaviour
     [SerializeField] private TMP_Text progressText;
     [Tooltip("RuleBanner 内三块规则文本节点，按顺序绑定（仅运行时填充 .text，不创建节点）")]
     [SerializeField] private TMP_Text[] ruleTexts;
-    [Tooltip("NextLevelButton 按钮")]
-    [SerializeField] private Button nextLevelButton;
-    [Tooltip("NextLevelButton 上的文字节点（留空则在 Start 时从按钮自动获取）")]
-    [SerializeField] private TMP_Text nextButtonText;
 
     [Header("反馈音频素材（拖入 Assets/Audio 下对应 mp3；启动时注入 FeedbackManager 实现预加载）")]
     [Tooltip("单击/滑动排除音效")]
@@ -50,9 +46,16 @@ public class GameManager : MonoBehaviour
     [SerializeField] private LivesController livesController;
     [Tooltip("失败弹窗（ModalPopup 预制体摆放在场景中，默认隐藏）")]
     [SerializeField] private ModalPopup failPopup;
+    [Tooltip("通关结算弹窗（LevelCompletePopup 预制体摆放在场景中，默认隐藏；下一关按钮位于其面板内）")]
+    [SerializeField] private LevelCompletePopup completePopup;
+    [Tooltip("魔法棒道具按钮（棋盘下方，关卡过程中常驻展示），点击自动填入一个正解猫格")]
+    [SerializeField] private Button magicWandButton;
 
     private List<BlockController> allBlocks = new List<BlockController>();
     private int currentCatCount; // 当前已锁定小猫数（given + 双击锁定），替代 FindAll 实时遍历，O(1) 读取
+    private List<bool[]> currentSolutions; // 本关所有合法解（LoadLevel 时 MapSolver.EnumerateAll），供多解判定/双击沿解/通关校验/魔法棒
+    private HashSet<int> lockedCatIndices; // 本关已锁猫一维索引集（given + 双击 + 魔法棒），阵营判定与沿解校验用
+    private int[] currentMap; // 本关地图颜色数组（LoadLevel 时填充），供魔法棒选格器读取颜色
     // 对象池：切换关卡时不销毁格子，回收入池复用，避免高频 Instantiate/Destroy 造成内存碎片与耗时
     private readonly Queue<BlockController> blockPool = new Queue<BlockController>();
 
@@ -63,6 +66,8 @@ public class GameManager : MonoBehaviour
     public float errorHintDuration = 1.5f;
     [Tooltip("血量归零后，延迟多久弹出失败弹窗（秒）。应大于错误抖动时长(0.4s)，让最后一次犯错的单格错误反馈（抖动/红框/音效/HUD文案）先播完再弹窗")]
     public float failPopupDelay = 0.5f;
+    [Tooltip("通关后，延迟多久弹出结算弹窗（秒）。应大于集体起舞时长 WaveJump≈0.48s，让猫咪起舞动画先播完再弹窗，避免弹窗瞬间盖住")]
+    public float completePopupDelay = 0.5f;
 
     // ====== 单击/双击/滑动 协调状态 ======
     private bool isPointerDown;            // 当前是否处于按下（可能滑动）状态
@@ -73,6 +78,7 @@ public class GameManager : MonoBehaviour
     private Coroutine pendingToggleRoutine;     // 延迟应用 cross 翻转的协程
     private Coroutine errorHintRoutine;    // 当前错误提示协程（用于重启时先停掉）
     private Coroutine failPopupRoutine;    // 延迟弹出失败弹窗的协程（待单格错误反馈播完再弹，用于重启时先停掉）
+    private Coroutine completePopupRoutine; // 延迟弹出结算弹窗的协程（待集体起舞播完再弹，用于切关时先停掉）
     private bool isLevelCompleted;    // 本关已通关：起舞/按钮弹出期间锁定棋盘输入，避免制造新错误格与"已通关"冲突
     private bool isLevelFailed;       // 本关已失败：血量归零后锁定棋盘输入，与 isLevelCompleted 互斥（PRD §7.5）
 
@@ -82,7 +88,6 @@ public class GameManager : MonoBehaviour
         loadedLevels = LevelTableLoader.Load("levels");
 
         FillRuleTexts();
-        EnsureNextButtonText();
         ValidateReferences();
         DisableUnneededRaycastTargets();
 
@@ -101,12 +106,11 @@ public class GameManager : MonoBehaviour
             return;
         }
 
-        // 绑定下一关按钮的点击事件
-        if (nextLevelButton != null)
+        // 绑定魔法棒道具按钮：点击触发自动填入正解猫
+        if (magicWandButton != null)
         {
-            nextLevelButton.gameObject.SetActive(false); // 初始时隐藏下一关按钮
-            nextLevelButton.onClick.RemoveAllListeners(); // 清理残留监听
-            nextLevelButton.onClick.AddListener(LoadNextLevel);
+            magicWandButton.onClick.RemoveAllListeners();
+            magicWandButton.onClick.AddListener(UseMagicWand);
         }
 
         // 默认加载 CSV 的第一关
@@ -131,17 +135,8 @@ public class GameManager : MonoBehaviour
     }
 
     /// <summary>
-    /// nextButtonText 未在 Inspector 绑定时，从 NextLevelButton 子节点兜底获取。
-    /// </summary>
-    private void EnsureNextButtonText()
-    {
-        if (nextButtonText == null && nextLevelButton != null)
-            nextButtonText = nextLevelButton.GetComponentInChildren<TMP_Text>();
-    }
-
-    /// <summary>
     /// 校验必需的顶部 UI 引用是否已绑定，缺失则报错便于排查。
-    /// 同时检查 gridParent / nextLevelButton 所在子 Canvas 是否带 GraphicRaycaster——
+    /// 同时检查 gridParent / 各弹窗所在子 Canvas 是否带 GraphicRaycaster——
     /// 拆分子 Canvas 后若漏加 GraphicRaycaster，格子与按钮会静默失去点击响应。
     /// </summary>
     private void ValidateReferences()
@@ -150,10 +145,8 @@ public class GameManager : MonoBehaviour
         if (blockPrefab == null) Debug.LogError("[GameManager] blockPrefab 未绑定！");
         if (levelText == null) Debug.LogError("[GameManager] levelText 未绑定（请按 TopUI_PrefabSpec.md 搭建预制体并拖拽）！");
         if (progressText == null) Debug.LogError("[GameManager] progressText 未绑定（请按 TopUI_PrefabSpec.md 搭建预制体并拖拽）！");
-        if (nextLevelButton == null) Debug.LogError("[GameManager] nextLevelButton 未绑定！");
 
         WarnIfNoRaycaster(gridParent, "gridParent");
-        WarnIfNoRaycaster(nextLevelButton != null ? nextLevelButton.transform : null, "nextLevelButton");
 
         // 反馈音频素材缺失仅告警（不阻塞），触觉与交互逻辑仍可工作
         if (excludeClip == null) Debug.LogWarning("[GameManager] excludeClip 未绑定，滑动/单击将无声！");
@@ -162,10 +155,14 @@ public class GameManager : MonoBehaviour
         if (finishClip == null) Debug.LogWarning("[GameManager] finishClip 未绑定，通关将无声！");
         if (failClip == null) Debug.LogWarning("[GameManager] failClip 未绑定，关卡失败将无声！");
 
-        // 生命值与失败弹窗引用校验
+        // 生命值与弹窗引用校验
         if (livesController == null) Debug.LogError("[GameManager] livesController 未绑定（请拖入挂有 LivesController 的场景对象）！");
         if (failPopup == null) Debug.LogError("[GameManager] failPopup 未绑定（请拖入 ModalPopup 预制体实例）！");
+        if (completePopup == null) Debug.LogError("[GameManager] completePopup 未绑定（请拖入 LevelCompletePopup 预制体实例）！");
+        if (magicWandButton == null) Debug.LogError("[GameManager] magicWandButton 未绑定（请拖入棋盘下方的魔法棒道具按钮）！");
         WarnIfNoRaycaster(failPopup != null ? failPopup.transform : null, "failPopup");
+        WarnIfNoRaycaster(completePopup != null ? completePopup.transform : null, "completePopup");
+        WarnIfNoRaycaster(magicWandButton != null ? magicWandButton.transform : null, "magicWandButton");
     }
 
     // 子 Canvas 必须各自带 GraphicRaycaster 才能接收点击；缺失则报错指引补加。
@@ -192,8 +189,19 @@ public class GameManager : MonoBehaviour
             for (int i = 0; i < ruleTexts.Length; i++)
                 if (ruleTexts[i] != null) ruleTexts[i].raycastTarget = false;
         }
-        // 按钮自身的 Graphic 必须保留 raycastTarget 以接收点击；仅关其子文字
-        if (nextButtonText != null) nextButtonText.raycastTarget = false;
+        // 下一关按钮文字现归结算弹窗（LevelCompletePopup）内部管理，此处不再处理
+
+        // 魔法棒道具按钮：按钮自身 Graphic（RoundedImage 圆形背景，Button.targetGraphic）保留 raycastTarget
+        // 以接收点击；其子节点（图标 Image / 文字）不接收点击，关闭 raycastTarget 减少输入遍历开销
+        if (magicWandButton != null)
+        {
+            var target = magicWandButton.targetGraphic;
+            foreach (var img in magicWandButton.GetComponentsInChildren<Image>())
+            {
+                if (img == target) continue; // 按钮自身 Graphic 保留
+                img.raycastTarget = false;
+            }
+        }
 
         // 全屏装饰背景：不接收点击，关闭其 RaycastTarget，让根 Canvas 的 raycaster 在输入事件中
         // 无可遍历 Graphic（兜底 raycaster 组件保留，零开销不破坏链路）。由 Inspector 绑定，不靠名字查找。
@@ -221,7 +229,7 @@ public class GameManager : MonoBehaviour
         {
             if (levelText != null) levelText.text = "All levels completed!";
             if (progressText != null) progressText.text = "";
-            if (nextLevelButton != null) nextLevelButton.gameObject.SetActive(false);
+            if (completePopup != null) completePopup.Hide();
             yield break; // 结束协程
         }
 
@@ -235,12 +243,16 @@ public class GameManager : MonoBehaviour
         }
         allBlocks.Clear();
         currentCatCount = 0; // 重置计数器，等待 given 猫与玩家双击重新累加
+        lockedCatIndices = new HashSet<int>(); // 重置已锁猫索引集，等待 given 与双击/魔法棒重新累加
+        currentSolutions = null; // 重置解集，待下方枚举填充
         isLevelCompleted = false; // 新关卡开始，解锁棋盘输入
         isLevelFailed = false; // 复位失败锁，允许新关卡正常交互（PRD §7.5）
-        // 重开/切关时复位血量并隐藏失败弹窗（restart 也走本路径，全新棋盘不保留失败前状态，PRD F16）
+        // 重开/切关时复位血量并隐藏弹窗（restart 也走本路径，全新棋盘不保留失败前状态，PRD F16）
         if (livesController != null) livesController.ResetLives();
         if (failPopupRoutine != null) { StopCoroutine(failPopupRoutine); failPopupRoutine = null; } // 停掉待弹的延迟协程，避免重开后又弹出过时弹窗
         if (failPopup != null) failPopup.Hide();
+        if (completePopupRoutine != null) { StopCoroutine(completePopupRoutine); completePopupRoutine = null; } // 停掉待弹的延迟协程，避免切关后又弹出过时结算弹窗
+        if (completePopup != null) completePopup.Hide();
 
         // 顺延一帧：让回收的 SetActive(false) 在本帧渲染前生效，再生成新关卡格子。
         // 用 yield return null（下一帧 Update 后）而非 WaitForEndOfFrame（帧末渲染后），
@@ -251,12 +263,9 @@ public class GameManager : MonoBehaviour
         LevelData currentLevel = loadedLevels[index];
         gridSize = currentLevel.gridSize; // 动态把关卡尺寸传给游戏
 
-        // 隐藏下一关按钮，等赢了再显示
-        if (nextLevelButton != null) nextLevelButton.gameObject.SetActive(false);
-
         // 转化地图数据
         int totalCells = gridSize * gridSize;
-        int[] currentMap = new int[totalCells];
+        currentMap = new int[totalCells];
         for (int i = 0; i < totalCells; i++)
         {
             if (i < currentLevel.mapData.Length)
@@ -296,14 +305,11 @@ public class GameManager : MonoBehaviour
             gridLayout.cellSize = new Vector2(usableW / gridSize, usableH / gridSize);
         }
 
-        // 正解：优先读取离线烘焙的 solutionData（O(1)）；缺失则回退运行时解算并告警
-        bool[] solution = currentLevel.solutionData;
-        if (solution == null)
-        {
-            Debug.LogWarning($"第 {index + 1} 关未烘焙 solution，运行时回退解算（建议用 Tools/Meowdoku/烘焙关卡正解 预先烘焙）。");
-            solution = MapSolver.Solve(gridSize, currentMap, currentLevel.givenCats, palette != null ? palette.Length : 0);
-        }
-        if (solution == null)
+        // 枚举本关所有合法解（多解支持）：双击沿解判定 / 通关校验 / 魔法棒选格共用。
+        // 烘焙的 solutionData 不再用于运行时判定（单解关 EnumerateAll 返回 1 解，行为与单解一致）。
+        int paletteLen = palette != null ? palette.Length : 0;
+        currentSolutions = MapSolver.EnumerateAll(gridSize, currentMap, currentLevel.givenCats, paletteLen);
+        if (currentSolutions.Count == 0)
         {
             Debug.LogError($"第 {index + 1} 关(CSV行)地图无解！");
         }
@@ -331,7 +337,9 @@ public class GameManager : MonoBehaviour
             Color cellColor = (currentMap[i] < palette.Length) ? palette[currentMap[i]] : Color.white;
             bc.Setup(r, c, currentMap[i], cellColor, this); // Setup 内部重置 hasCat/hasCross/isGiven/isCorrect
 
-            bc.isCorrect = solution != null && solution[i];
+            // isCorrect = 该格属于至少一个合法解（解集并集）。仅供调试/未来视觉提示；
+            // 双击判定改用 CanLockAlongSolution（沿解可锁），不再读 isCorrect。
+            bc.isCorrect = IsInAnySolution(i);
             allBlocks.Add(bc);
         }
 
@@ -348,6 +356,7 @@ public class GameManager : MonoBehaviour
                 gb.isGiven = true;
                 gb.ApplyVisualState(); // given 猫载入时无声显示，不播破壳动画
                 currentCatCount++; // given 猫计入已锁定数
+                lockedCatIndices.Add(idx); // given 已锁，计入阵营/沿解校验基准
             }
         }
 
@@ -483,12 +492,12 @@ public class GameManager : MonoBehaviour
         FeedbackManager.Instance?.ExcludeAudioOnly();
     }
 
-    // 双击：已锁定→忽略；正解格→锁定小猫；错误格→错误提示
+    // 双击：已锁定→忽略；沿解可锁→锁定小猫；否则错误提示
     private void ExecuteDoubleClick(BlockController block)
     {
         if (block == null || block.hasCat) return;
 
-        if (block.isCorrect)
+        if (CanLockAlongSolution(block))
         {
             // 锁定小猫：显示猫并播破壳弹跳 0->1.25->1.0，清除可能存在的排除标记
             block.hasCat = true;
@@ -496,6 +505,7 @@ public class GameManager : MonoBehaviour
             block.ApplyVisualState();
             block.PlayCatPop();
             currentCatCount++; // 新锁定一只正解猫
+            lockedCatIndices.Add(block.row * gridSize + block.col); // 计入阵营/沿解校验基准
             FeedbackManager.Instance?.Success(); // 成功音效 + 触觉，与猫咪显现同帧
             CheckRules();
         }
@@ -514,6 +524,68 @@ public class GameManager : MonoBehaviour
             // LoseLife 内部归零时经 OnLivesZero 事件触发 HandleLevelFailed，本处不直接判失败。
             if (livesController != null) livesController.LoseLife();
         }
+    }
+
+    /// <summary>该格是否可锁定：存在某个合法解同时包含该格与当前所有已锁猫（沿解可锁）。
+    /// 单解关等价于 isCorrect；多解关玩家只能沿某解推进，走错（与已锁猫不在同一解）→ false 落错误分支。
+    /// 保证玩家锁的猫始终是某解子集，N 只即构成某解通关。</summary>
+    private bool CanLockAlongSolution(BlockController block)
+    {
+        if (currentSolutions == null || currentSolutions.Count == 0) return block.isCorrect; // 无解集兜底退回 isCorrect
+        int idx = block.row * gridSize + block.col;
+        foreach (var s in currentSolutions)
+        {
+            if (s == null || idx >= s.Length) continue;
+            if (!s[idx]) continue;
+            // 该格属此解 s；再校验已锁猫是否都在 s 内
+            if (lockedCatIndices == null || LockedSubsetOf(s)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>已锁猫索引集是否全在解 s 内（s 含所有已锁猫）。</summary>
+    private bool LockedSubsetOf(bool[] s)
+    {
+        foreach (int idx in lockedCatIndices)
+        {
+            if (idx < 0 || idx >= s.Length || !s[idx]) return false;
+        }
+        return true;
+    }
+
+    /// <summary>该格是否属于至少一个合法解（解集并集）。用于 isCorrect 赋值（调试/视觉提示）。</summary>
+    private bool IsInAnySolution(int idx)
+    {
+        if (currentSolutions == null) return false;
+        foreach (var s in currentSolutions)
+        {
+            if (s != null && idx < s.Length && s[idx]) return true;
+        }
+        return false;
+    }
+
+    /// <summary>已锁猫是否恰好构成某个合法解（多解关走出任一解即通关）。</summary>
+    private bool IsAnySolutionSatisfied()
+    {
+        if (currentSolutions == null || currentSolutions.Count == 0) return false;
+        foreach (var s in currentSolutions)
+        {
+            if (s == null) continue;
+            if (LockedEquals(s)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>已锁猫索引集是否恰好等于解 s 的真值集合。</summary>
+    private bool LockedEquals(bool[] s)
+    {
+        // 已锁猫数必须等于该解猫数（每解恰好 gridSize 只）
+        if (lockedCatIndices == null || lockedCatIndices.Count != gridSize) return false;
+        foreach (int idx in lockedCatIndices)
+        {
+            if (idx < 0 || idx >= s.Length || !s[idx]) return false;
+        }
+        return true;
     }
 
     // 错误提示：ProgressText 临时显示并放大回弹，随后恢复进度文本
@@ -541,6 +613,38 @@ public class GameManager : MonoBehaviour
         LoadLevel(currentLevelIndex);
     }
 
+    // ================= 魔法棒道具（自动填入一个正解猫格）=================
+
+    /// <summary>魔法棒按钮点击：按 MagicWandSolver 选格策略自动锁定一只正解猫。
+    /// 终态（通关/失败）锁定不处理；无候选格（已全部锁定）给轻触反馈。</summary>
+    public void UseMagicWand()
+    {
+        if (isLevelCompleted || isLevelFailed)
+        {
+            FeedbackManager.Instance?.Tap();
+            return;
+        }
+        if (currentSolutions == null || currentSolutions.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
+
+        int? picked = MagicWandSolver.Pick(gridSize, currentMap, palette != null ? palette.Length : 0, currentSolutions, lockedCatIndices);
+        if (picked == null) { FeedbackManager.Instance?.Tap(); return; }
+
+        int idx = picked.Value;
+        if (idx < 0 || idx >= allBlocks.Count) { FeedbackManager.Instance?.Tap(); return; }
+        BlockController bc = allBlocks[idx];
+        if (bc == null || bc.hasCat) { FeedbackManager.Instance?.Tap(); return; }
+
+        // 锁定小猫（与双击正解分支同路径）：显示猫 + 破壳弹跳 + 计数 + 阵营索引
+        bc.hasCat = true;
+        bc.hasCross = false;
+        bc.ApplyVisualState();
+        bc.PlayCatPop();
+        currentCatCount++;
+        lockedCatIndices.Add(idx);
+        FeedbackManager.Instance?.Success(); // 与猫咪显现同帧（本期复用 successClip）
+        CheckRules();
+    }
+
     // ================= 关卡失败与复活流程（PRD §3.3 / §3.5 / §4.2-4.4）=================
 
     /// <summary>
@@ -560,8 +664,8 @@ public class GameManager : MonoBehaviour
             errorHintRoutine = null;
         }
 
-        // 失败音效 + 触觉立即播（与单格 Error 叠加，PRD F19/§6）
-        FeedbackManager.Instance?.Fail();
+        // 失败音效 + 触觉：延迟到当前格子 errorClip 播完再播 failClip，避免与双击点错的 Error 叠加（PRD F19/§6）
+        FeedbackManager.Instance?.FailAfterErrorClip();
 
         // 延迟显示失败弹窗：等最后一次犯错的单格错误反馈（抖动 0.4s / 红框 / 音效 / HUD"Not Cat!!!"）播完再弹，
         // 避免弹窗瞬间盖住反馈。延迟期间 isLevelFailed 已锁棋盘，玩家完整看到最后一次犯错的反馈。
@@ -621,13 +725,17 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    // 通关后延时 0.5s 给视觉缓冲，再让下一关按钮弹性亮相；亮相后才恢复可点击
-    private IEnumerator RevealNextButtonAfter(float delay, bool interactableAfter)
+    /// <summary>延迟弹出通关结算弹窗：待集体起舞（completePopupDelay，默认 0.5s）播完再 Show。
+    /// 文案随是否末关切换；下一关按钮沿用原 RevealNextButtonAfter 语义——末关不可点
+    /// （待后续「全通关」需求再定）。切关时由 SafeLoadLevelRoutine 停掉本协程避免弹过时弹窗。</summary>
+    private IEnumerator ShowCompletePopupAfter(float delay, bool isLastLevel)
     {
         yield return new WaitForSeconds(delay);
-        if (nextLevelButton == null) yield break;
-        nextLevelButton.interactable = interactableAfter;
-        TweenRunner.ElasticButtonPop(nextLevelButton.transform); // 0.0->1.25->0.90->1.0
+        completePopupRoutine = null;
+        if (completePopup == null) yield break;
+        string title = isLastLevel ? "All Levels Completed!" : $"Level {currentLevelIndex + 1} Completed!";
+        string nextLabel = isLastLevel ? "All Complete!" : $"Level {currentLevelIndex + 2}";
+        completePopup.Show(title, nextLabel, !isLastLevel, LoadNextLevel);
     }
 
     // ================= 规则校验与状态刷新 =================
@@ -638,16 +746,17 @@ public class GameManager : MonoBehaviour
         // 已锁定的小猫数（given + 双击锁定；错误格无法锁猫，故达标即所有正解猫被点出）
         int correctCount = currentCatCount;
 
-        // 胜利条件：所有正解小猫被双击点出（hasCat 数 == gridSize）；排除标记不影响通关
-        if (correctCount == gridSize)
+        // 胜利条件：已锁猫恰好构成某个合法解（多解关走出任一解即通关）。
+        // 因双击/魔法棒只锁沿解猫，correctCount==gridSize 时 IsAnySolutionSatisfied 必真，加它作防 bug 保险。
+        if (correctCount == gridSize && IsAnySolutionSatisfied())
         {
             isLevelCompleted = true; // 锁定棋盘输入：起舞/按钮弹出期间不再处理状态变更
             bool isLastLevel = currentLevelIndex >= loadedLevels.Count - 1;
             if (progressText != null)
                 progressText.text = isLastLevel ? "All levels completed!" : $"Level {currentLevelIndex + 1} completed!";
 
-            // 通关音效 + 触觉
-            FeedbackManager.Instance?.Finish();
+            // 通关音效 + 触觉：延迟到当前格子 successClip 播完再播 finishClip，避免与双击/魔法棒锁猫的 Success 叠加
+            FeedbackManager.Instance?.FinishAfterSuccessClip();
 
             // 猫咪集体起舞：遍历全盘所有已点出的猫咪，同步波浪往复跳跃（LocalY 0->30->0）
             var dancingCats = new List<Transform>();
@@ -658,15 +767,12 @@ public class GameManager : MonoBehaviour
             }
             TweenRunner.WaveJump(dancingCats);
 
-            // 下一关按钮：先隐藏（缩放 0），延时 0.5s 视觉缓冲后弹性亮相
-            if (nextLevelButton != null)
+            // 通关结算弹窗：待集体起舞（WaveJump≈0.48s）播完再弹，避免弹窗瞬间盖住起舞动画。
+            // 下一关按钮现已位于结算弹窗面板内，由弹窗 Show 时填充文案与回调。
+            if (completePopup != null)
             {
-                if (nextButtonText != null)
-                    nextButtonText.text = isLastLevel ? "All Complete!" : $"Level {currentLevelIndex + 2}";
-                nextLevelButton.interactable = false; // 弹出动画期间禁用，防误触
-                nextLevelButton.gameObject.SetActive(true);
-                nextLevelButton.transform.localScale = Vector3.zero; // 瞬间强行设为 0
-                StartCoroutine(RevealNextButtonAfter(0.5f, !isLastLevel));
+                if (completePopupRoutine != null) StopCoroutine(completePopupRoutine);
+                completePopupRoutine = StartCoroutine(ShowCompletePopupAfter(completePopupDelay, isLastLevel));
             }
             return;
         }
