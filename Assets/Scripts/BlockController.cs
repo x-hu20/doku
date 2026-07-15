@@ -94,6 +94,12 @@ public class BlockController : MonoBehaviour, IPointerClickHandler, IPointerDown
         TweenRunner.ShakeHorizontal(transform, 14f, 0.4f);
     }
 
+    /// <summary>两下柔和横向抖动（提示道具取消 cross 后引导双击该格）</summary>
+    public void PlayAttentionShake()
+    {
+        TweenRunner.DoubleShake(transform);
+    }
+
     /// <summary>边框染红 + 本关锁定（不再响应点击），保留至关卡结束</summary>
     public void LockAsError()
     {

@@ -53,6 +53,18 @@ public class GameManager : MonoBehaviour
     [Tooltip("提示道具按钮（棋盘下方，与魔法棒并列），按优先级给填入/打叉/取消叉提示")]
     [SerializeField] private Button tipButton;
 
+    [Header("道具数量与红点（Inspector 拖拽）")]
+    [Tooltip("每关初始道具数量（魔法棒与提示各自独立计数）")]
+    [SerializeField] private int initialItemCount = 5;
+    [Tooltip("魔法棒按钮右上角红点：Image（圆形背景）+ 子 TMP_Text 显示数量。数量 0 时整体隐藏")]
+    [SerializeField] private Image magicWandBadge;
+    [SerializeField] private TMP_Text magicWandBadgeText;
+    [Tooltip("提示道具按钮右上角红点")]
+    [SerializeField] private Image tipBadge;
+    [SerializeField] private TMP_Text tipBadgeText;
+    private int magicWandCount; // 当前魔法棒剩余数量
+    private int tipCount;       // 当前提示道具剩余数量
+
     private List<BlockController> allBlocks = new List<BlockController>();
     private int currentCatCount; // 当前已锁定小猫数（given + 双击锁定），替代 FindAll 实时遍历，O(1) 读取
     private List<bool[]> currentSolutions; // 本关所有合法解（LoadLevel 时 MapSolver.EnumerateAll），供多解判定/双击沿解/通关校验/魔法棒
@@ -121,6 +133,10 @@ public class GameManager : MonoBehaviour
             tipButton.onClick.AddListener(UseTip);
         }
 
+        // 道具数量初始（关卡1），跨关继承，切关不重置（仅 Start 设一次）
+        magicWandCount = initialItemCount;
+        tipCount = initialItemCount;
+
         // 默认加载 CSV 的第一关
         LoadLevel(currentLevelIndex);
     }
@@ -169,6 +185,8 @@ public class GameManager : MonoBehaviour
         if (completePopup == null) Debug.LogError("[GameManager] completePopup 未绑定（请拖入 LevelCompletePopup 预制体实例）！");
         if (magicWandButton == null) Debug.LogError("[GameManager] magicWandButton 未绑定（请拖入棋盘下方的魔法棒道具按钮）！");
         if (tipButton == null) Debug.LogError("[GameManager] tipButton 未绑定（请拖入棋盘下方的提示道具按钮）！");
+        if (magicWandBadge == null) Debug.LogWarning("[GameManager] magicWandBadge 未绑定，魔法棒数量红点不显示！");
+        if (tipBadge == null) Debug.LogWarning("[GameManager] tipBadge 未绑定，提示道具数量红点不显示！");
         WarnIfNoRaycaster(failPopup != null ? failPopup.transform : null, "failPopup");
         WarnIfNoRaycaster(completePopup != null ? completePopup.transform : null, "completePopup");
         WarnIfNoRaycaster(magicWandButton != null ? magicWandButton.transform : null, "magicWandButton");
@@ -205,6 +223,10 @@ public class GameManager : MonoBehaviour
         // 以接收点击；其子节点（图标 Image / 文字）不接收点击，关闭 raycastTarget 减少输入遍历开销
         DisableButtonChildRaycast(magicWandButton);
         DisableButtonChildRaycast(tipButton);
+
+        // 道具红点文字（纯展示）关闭 raycastTarget，减少输入遍历
+        if (magicWandBadgeText != null) magicWandBadgeText.raycastTarget = false;
+        if (tipBadgeText != null) tipBadgeText.raycastTarget = false;
 
         // 全屏装饰背景：不接收点击，关闭其 RaycastTarget，让根 Canvas 的 raycaster 在输入事件中
         // 无可遍历 Graphic（兜底 raycaster 组件保留，零开销不破坏链路）。由 Inspector 绑定，不靠名字查找。
@@ -262,6 +284,11 @@ public class GameManager : MonoBehaviour
         currentSolutions = null; // 重置解集，待下方枚举填充
         isLevelCompleted = false; // 新关卡开始，解锁棋盘输入
         isLevelFailed = false; // 复位失败锁，允许新关卡正常交互（PRD §7.5）
+        // 道具数量跨关继承（不每关重置）；按钮恢复可点击（通关时被锁），刷新红点显示当前数量
+        if (magicWandButton != null) magicWandButton.interactable = true;
+        if (tipButton != null) tipButton.interactable = true;
+        RefreshMagicWandBadge();
+        RefreshTipBadge();
         // 重开/切关时复位血量并隐藏弹窗（restart 也走本路径，全新棋盘不保留失败前状态，PRD F16）
         if (livesController != null) livesController.ResetLives();
         if (failPopupRoutine != null) { StopCoroutine(failPopupRoutine); failPopupRoutine = null; } // 停掉待弹的延迟协程，避免重开后又弹出过时弹窗
@@ -550,22 +577,11 @@ public class GameManager : MonoBehaviour
         int idx = block.row * gridSize + block.col;
         foreach (var s in currentSolutions)
         {
-            if (s == null || idx >= s.Length) continue;
-            if (!s[idx]) continue;
+            if (s == null || idx >= s.Length || !s[idx]) continue;
             // 该格属此解 s；再校验已锁猫是否都在 s 内
-            if (lockedCatIndices == null || LockedSubsetOf(s)) return true;
+            if (SolverUtil.LockedSubsetOf(s, lockedCatIndices)) return true;
         }
         return false;
-    }
-
-    /// <summary>已锁猫索引集是否全在解 s 内（s 含所有已锁猫）。</summary>
-    private bool LockedSubsetOf(bool[] s)
-    {
-        foreach (int idx in lockedCatIndices)
-        {
-            if (idx < 0 || idx >= s.Length || !s[idx]) return false;
-        }
-        return true;
     }
 
     /// <summary>该格是否属于至少一个合法解（解集并集）。用于 isCorrect 赋值（调试/视觉提示）。</summary>
@@ -579,29 +595,19 @@ public class GameManager : MonoBehaviour
         return false;
     }
 
-    /// <summary>已锁猫是否恰好构成某个合法解（多解关走出任一解即通关）。</summary>
+    /// <summary>已锁猫是否恰好构成某个合法解（多解关走出任一解即通关）。
+    /// 因双击/魔法棒只锁沿解猫，count==gridSize 时此条件必真，加它作防 bug 保险。</summary>
     private bool IsAnySolutionSatisfied()
     {
         if (currentSolutions == null || currentSolutions.Count == 0) return false;
+        if (lockedCatIndices == null || lockedCatIndices.Count != gridSize) return false; // 每解恰好 gridSize 只
         foreach (var s in currentSolutions)
         {
-            if (s == null) continue;
-            if (LockedEquals(s)) return true;
+            if (s != null && SolverUtil.LockedSubsetOf(s, lockedCatIndices)) return true;
         }
         return false;
     }
 
-    /// <summary>已锁猫索引集是否恰好等于解 s 的真值集合。</summary>
-    private bool LockedEquals(bool[] s)
-    {
-        // 已锁猫数必须等于该解猫数（每解恰好 gridSize 只）
-        if (lockedCatIndices == null || lockedCatIndices.Count != gridSize) return false;
-        foreach (int idx in lockedCatIndices)
-        {
-            if (idx < 0 || idx >= s.Length || !s[idx]) return false;
-        }
-        return true;
-    }
 
     // 错误提示：ProgressText 临时显示并放大回弹，随后恢复进度文本
     private void ShowErrorHint()
@@ -630,8 +636,8 @@ public class GameManager : MonoBehaviour
 
     // ================= 魔法棒道具（自动填入一个正解猫格）=================
 
-    /// <summary>魔法棒按钮点击：按 MagicWandSolver 选格策略自动锁定一只正解猫。
-    /// 终态（通关/失败）锁定不处理；无候选格（已全部锁定）给轻触反馈。</summary>
+    /// <summary>魔法棒按钮点击：数量 0 调激励广告（奖励 +1 不立即执行）；>0 按 MagicWandSolver 选格锁猫并 -1。
+    /// 终态（通关/失败）锁定不处理；无候选格给轻触反馈。</summary>
     public void UseMagicWand()
     {
         if (isLevelCompleted || isLevelFailed)
@@ -640,6 +646,19 @@ public class GameManager : MonoBehaviour
             return;
         }
         if (currentSolutions == null || currentSolutions.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
+
+        // 数量 0：调激励广告，奖励到账后 +1 并刷新红点，但不立即执行（玩家再点才使用）
+        if (magicWandCount <= 0)
+        {
+            AdManager.Instance?.ShowRewardedAd(
+                onRewarded: () =>
+                {
+                    magicWandCount++;
+                    RefreshMagicWandBadge();
+                },
+                onFailedOrClosed: () => { /* 未获奖励：红点保持隐藏，玩家可再点重看 */ });
+            return;
+        }
 
         int? picked = MagicWandSolver.Pick(gridSize, currentMap, palette != null ? palette.Length : 0, currentSolutions, lockedCatIndices);
         if (picked == null) { FeedbackManager.Instance?.Tap(); return; }
@@ -656,6 +675,8 @@ public class GameManager : MonoBehaviour
         bc.PlayCatPop();
         currentCatCount++;
         lockedCatIndices.Add(idx);
+        magicWandCount--; // 棋盘发生变化后扣减并刷新红点
+        RefreshMagicWandBadge();
         FeedbackManager.Instance?.Success(); // 与猫咪显现同帧（本期复用 successClip）
         CheckRules();
     }
@@ -669,6 +690,19 @@ public class GameManager : MonoBehaviour
         if (isLevelCompleted || isLevelFailed) { FeedbackManager.Instance?.Tap(); return; }
         if (currentSolutions == null || currentSolutions.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
 
+        // 数量 0：调激励广告，奖励到账后 +1 刷新红点，不立即执行（玩家再点才使用）
+        if (tipCount <= 0)
+        {
+            AdManager.Instance?.ShowRewardedAd(
+                onRewarded: () =>
+                {
+                    tipCount++;
+                    RefreshTipBadge();
+                },
+                onFailedOrClosed: () => { /* 未获奖励：红点保持隐藏，玩家可再点重看 */ });
+            return;
+        }
+
         // 收集当前叉号格集
         HashSet<int> crossed = new HashSet<int>();
         for (int i = 0; i < allBlocks.Count; i++)
@@ -679,6 +713,10 @@ public class GameManager : MonoBehaviour
 
         TipAction action = TipSolver.Pick(gridSize, currentMap, palette != null ? palette.Length : 0, currentSolutions, lockedCatIndices, crossed);
         if (action == null || action.indices == null || action.indices.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
+
+        // 有动作可执行：扣减并刷新红点（棋盘即将发生变化）
+        tipCount--;
+        RefreshTipBadge();
 
         switch (action.type)
         {
@@ -718,7 +756,7 @@ public class GameManager : MonoBehaviour
             }
             case TipActionType.RemoveCross:
             {
-                // 取消错叉（仅移除叉号，不改锁猫状态）
+                // 取消错叉（仅移除叉号，不改锁猫状态），抖动两下引导玩家双击该正解格
                 foreach (int idx in action.indices)
                 {
                     if (idx < 0 || idx >= allBlocks.Count) continue;
@@ -726,11 +764,24 @@ public class GameManager : MonoBehaviour
                     if (bc == null || !bc.hasCross) continue;
                     bc.hasCross = false;
                     bc.ApplyVisualState();
+                    bc.PlayAttentionShake(); // 两下柔和抖动，引导双击
                 }
                 FeedbackManager.Instance?.Tap();
                 break;
             }
         }
+    }
+
+    // ================= 道具红点刷新 =================
+
+    private void RefreshMagicWandBadge() { RefreshBadge(magicWandCount, magicWandBadge, magicWandBadgeText); }
+    private void RefreshTipBadge() { RefreshBadge(tipCount, tipBadge, tipBadgeText); }
+
+    /// <summary>刷新道具红点：数量>0 显示红点+数字，数量 0 隐藏红点。</summary>
+    private static void RefreshBadge(int count, Image badge, TMP_Text text)
+    {
+        if (badge != null) badge.gameObject.SetActive(count > 0);
+        if (text != null && count > 0) text.text = count.ToString();
     }
 
     // ================= 关卡失败与复活流程（PRD §3.3 / §3.5 / §4.2-4.4）=================
@@ -839,6 +890,9 @@ public class GameManager : MonoBehaviour
         if (correctCount == gridSize && IsAnySolutionSatisfied())
         {
             isLevelCompleted = true; // 锁定棋盘输入：起舞/按钮弹出期间不再处理状态变更
+            // 通关后道具按钮不可点击，直到进入下一关（LoadLevel 会恢复 interactable）
+            if (magicWandButton != null) magicWandButton.interactable = false;
+            if (tipButton != null) tipButton.interactable = false;
             bool isLastLevel = currentLevelIndex >= loadedLevels.Count - 1;
             if (progressText != null)
                 progressText.text = isLastLevel ? "All levels completed!" : $"Level {currentLevelIndex + 1} completed!";

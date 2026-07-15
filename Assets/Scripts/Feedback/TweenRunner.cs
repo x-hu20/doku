@@ -94,6 +94,37 @@ public static class TweenRunner
         t.localPosition = basePos;
     }
 
+    // ===================== 场景 3.5：引导双抖（两下柔和横向抖动，提示该格可双击）=====================
+    /// <param name="t">格子 Transform</param>
+    /// <param name="amplitude">单下抖动幅度（px），小于错误抖动以区分</param>
+    /// <param name="eachMs">单下时长（毫秒），两下间有短暂停顿</param>
+    public static void DoubleShake(Transform t, float amplitude = 7f, float eachMs = 180f)
+    {
+        if (t == null) return;
+        RunExclusive(t, DoubleShakeRoutine(t, amplitude, eachMs / 1000f));
+    }
+
+    private static IEnumerator DoubleShakeRoutine(Transform t, float amp, float eachSec)
+    {
+        Vector3 basePos = t.localPosition;
+        const float freq = 38f;
+        for (int k = 0; k < 2; k++) // 两下
+        {
+            float elapsed = 0f;
+            while (elapsed < eachSec)
+            {
+                float envelope = 1f - elapsed / eachSec; // 线性衰减
+                float off = Mathf.Sin(elapsed * freq) * amp * envelope;
+                t.localPosition = basePos + new Vector3(off, 0f, 0f);
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+            t.localPosition = basePos;
+            if (k == 0) { float p = 0f; while (p < 0.07f) { p += Time.deltaTime; yield return null; } } // 两下间短暂停顿
+        }
+        t.localPosition = basePos;
+    }
+
     // ===================== 场景 5：下一关按钮弹性亮相 0.0 ->1.25->0.90->1.0 =====================
     public static void ElasticButtonPop(Transform t)
     {
