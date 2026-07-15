@@ -97,7 +97,16 @@ public static class TipSolver
     // ===================== 分支2：已有锁猫 =====================
     private static TipAction Branch2(int gridSize, int[] map, int paletteLength, List<bool[]> solutions, HashSet<int> locked, HashSet<int> crossed)
     {
-        // 辅助格 = 每只锁猫的同行/同列/3x3邻域 - locked自身
+        // F = 含所有已锁猫的解（阵营）。用于辅助格排除阵营正解、错叉判定。
+        List<int> crossedList = crossed != null ? new List<int>(crossed) : new List<int>();
+        List<bool[]> factionLocked = new List<bool[]>();
+        foreach (var s in solutions)
+            if (LockedSubsetOf(s, locked)) factionLocked.Add(s);
+        if (factionLocked.Count == 0) factionLocked = solutions; // 兜底（理论不会，locked 必属某解）
+        bool[] unionF = UnionOfSolutions(factionLocked, gridSize * gridSize);
+
+        // 1. 优先排除已锁猫的行列+周围：辅助格 = 锁猫同行/同列/3x3邻域 - locked - 阵营正解格
+        //    阵营正解格（unionF）不该被叉；其余周围格必非阵营正解，可安全排除。未叉→打叉。
         HashSet<int> aux = new HashSet<int>();
         foreach (int idx in locked)
         {
@@ -115,62 +124,51 @@ public static class TipSolver
         }
         aux.ExceptWith(locked); // 排除锁猫自身
 
-        // 未叉辅助格
         List<int> unCrossedAux = new List<int>();
         foreach (int i in aux)
-            if (crossed == null || !crossed.Contains(i)) unCrossedAux.Add(i);
-
+        {
+            if (i >= 0 && i < unionF.Length && unionF[i]) continue; // 阵营正解格跳过
+            if (crossed != null && crossed.Contains(i)) continue;
+            unCrossedAux.Add(i);
+        }
         if (unCrossedAux.Count > 0)
-        {
-            // 2.1 无辅助cross：未叉→打叉，已叉不动
-            return new TipAction(TipActionType.SetCross, unCrossedAux);
-        }
+            return new TipAction(TipActionType.SetCross, unCrossedAux); // 未叉→打叉，已叉不动（非 toggle）
 
-        // 2.2 有辅助cross（全叉）
-        bool[] union = UnionOfSolutions(solutions, gridSize * gridSize);
-        // 错叉集 = crossed ∩ 解集并集
-        List<int> wrongCross = new List<int>();
-        if (crossed != null)
-            foreach (int i in crossed)
-                if (i >= 0 && i < union.Length && union[i]) wrongCross.Add(i);
+        // 2. 辅助格全叉后，判错叉/填猫
+        // candidates = 阵营 F 中未被 cross 占用（无正解格被叉）的解
+        List<bool[]> candidates = new List<bool[]>();
+        foreach (var s in factionLocked)
+            if (!SolutionHasAny(s, crossedList)) candidates.Add(s);
 
-        if (wrongCross.Count == 0)
+        if (candidates.Count == 0)
         {
-            // 2.2.0/2.2.1 无错叉→走魔法棒
-            int? g = MagicWandSolver.Pick(gridSize, map, paletteLength, solutions, locked);
-            if (g == null) return null;
-            return new TipAction(TipActionType.FillCat, g.Value);
-        }
-
-        if (solutions.Count == 1)
-        {
-            // 2.2.2 单解：取消一个占用（错叉格按色可能位置数最小→中心）
+            // 误解：阵营解全被 cross 排除。取消「阵营正解格」上的 cross（错叉）——
+            // 互斥解（不含 locked）正解格被叉是合理排除，不算错叉，不取消。
+            List<int> wrongCross = new List<int>();
+            if (crossed != null)
+                foreach (int i in crossed)
+                    if (i >= 0 && i < unionF.Length && unionF[i]) wrongCross.Add(i);
+            if (wrongCross.Count == 0) return null;
             int? g = PickWrongCrossToRemove(gridSize, map, paletteLength, wrongCross, locked);
             if (g == null) return null;
             return new TipAction(TipActionType.RemoveCross, g.Value);
         }
 
-        // 2.2.3 多解：按被错叉占用的解集合个数 |O| 判定
-        List<bool[]> occupied = new List<bool[]>();
-        foreach (var s in solutions)
-            if (SolutionHasAny(s, wrongCross)) occupied.Add(s);
+        // candidates 非空 → 走魔法棒限定 candidates 填猫
+        int? picked = MagicWandSolver.Pick(gridSize, map, paletteLength, candidates, locked);
+        if (picked == null) return null;
+        return new TipAction(TipActionType.FillCat, picked.Value);
+    }
 
-        if (occupied.Count == 1)
+    /// <summary>locked 是否全在解 s 内（s 含所有已锁猫 → s 属阵营）。</summary>
+    private static bool LockedSubsetOf(bool[] s, HashSet<int> locked)
+    {
+        if (locked == null) return true;
+        foreach (int idx in locked)
         {
-            // |O|==1：走魔法棒但排除已占用解
-            List<bool[]> usable = new List<bool[]>(solutions);
-            usable.Remove(occupied[0]);
-            int? g = MagicWandSolver.Pick(gridSize, map, paletteLength, usable, locked);
-            if (g == null) return null;
-            return new TipAction(TipActionType.FillCat, g.Value);
+            if (idx < 0 || idx >= s.Length || !s[idx]) return false;
         }
-        else
-        {
-            // |O|>=2：取消一个占用
-            int? g = PickWrongCrossToRemove(gridSize, map, paletteLength, wrongCross, locked);
-            if (g == null) return null;
-            return new TipAction(TipActionType.RemoveCross, g.Value);
-        }
+        return true;
     }
 
     // ===================== 辅助：颜色可能位置 / 选格 =====================

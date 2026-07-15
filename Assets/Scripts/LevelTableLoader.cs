@@ -52,19 +52,25 @@ public static class LevelTableLoader
             mapString = line.Substring(mq0 + 1, mq1 - mq0 - 1);
 
             // 第 2 对引号为 given（可选，缺失则视为无 given）
-            if (quoteIndices.Count >= 4)
+            if (quoteIndices.Count >= 6)
             {
+                // 3 对引号：map, given(带引号), solution —— given 列用引号包裹
                 int gq0 = quoteIndices[2];
                 int gq1 = quoteIndices[3];
                 givenString = line.Substring(gq0 + 1, gq1 - gq0 - 1);
 
-                // 第 3 对引号为 solution（可选，缺失则 solutionData=null，运行时回退解算）
-                if (quoteIndices.Count >= 6)
-                {
-                    int sq0 = quoteIndices[4];
-                    int sq1 = quoteIndices[5];
-                    solutionString = line.Substring(sq0 + 1, sq1 - sq0 - 1);
-                }
+                int sq0 = quoteIndices[4];
+                int sq1 = quoteIndices[5];
+                solutionString = line.Substring(sq0 + 1, sq1 - sq0 - 1);
+            }
+            else if (quoteIndices.Count >= 4)
+            {
+                // 2 对引号：map, solution —— given 列无引号（裸值如 8，或空），
+                // 位于 map 结束引号之后、solution 开始引号之前。第 2 对引号实为 solution。
+                int solStart = quoteIndices[2];
+                int solEnd = quoteIndices[3];
+                givenString = line.Substring(mq1 + 1, solStart - mq1 - 1).Trim(',', ' ');
+                solutionString = line.Substring(solStart + 1, solEnd - solStart - 1);
             }
             else
             {
