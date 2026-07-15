@@ -50,6 +50,8 @@ public class GameManager : MonoBehaviour
     [SerializeField] private LevelCompletePopup completePopup;
     [Tooltip("魔法棒道具按钮（棋盘下方，关卡过程中常驻展示），点击自动填入一个正解猫格")]
     [SerializeField] private Button magicWandButton;
+    [Tooltip("提示道具按钮（棋盘下方，与魔法棒并列），按优先级给填入/打叉/取消叉提示")]
+    [SerializeField] private Button tipButton;
 
     private List<BlockController> allBlocks = new List<BlockController>();
     private int currentCatCount; // 当前已锁定小猫数（given + 双击锁定），替代 FindAll 实时遍历，O(1) 读取
@@ -112,6 +114,12 @@ public class GameManager : MonoBehaviour
             magicWandButton.onClick.RemoveAllListeners();
             magicWandButton.onClick.AddListener(UseMagicWand);
         }
+        // 绑定提示道具按钮：按优先级给填入/打叉/取消叉提示
+        if (tipButton != null)
+        {
+            tipButton.onClick.RemoveAllListeners();
+            tipButton.onClick.AddListener(UseTip);
+        }
 
         // 默认加载 CSV 的第一关
         LoadLevel(currentLevelIndex);
@@ -160,9 +168,11 @@ public class GameManager : MonoBehaviour
         if (failPopup == null) Debug.LogError("[GameManager] failPopup 未绑定（请拖入 ModalPopup 预制体实例）！");
         if (completePopup == null) Debug.LogError("[GameManager] completePopup 未绑定（请拖入 LevelCompletePopup 预制体实例）！");
         if (magicWandButton == null) Debug.LogError("[GameManager] magicWandButton 未绑定（请拖入棋盘下方的魔法棒道具按钮）！");
+        if (tipButton == null) Debug.LogError("[GameManager] tipButton 未绑定（请拖入棋盘下方的提示道具按钮）！");
         WarnIfNoRaycaster(failPopup != null ? failPopup.transform : null, "failPopup");
         WarnIfNoRaycaster(completePopup != null ? completePopup.transform : null, "completePopup");
         WarnIfNoRaycaster(magicWandButton != null ? magicWandButton.transform : null, "magicWandButton");
+        WarnIfNoRaycaster(tipButton != null ? tipButton.transform : null, "tipButton");
     }
 
     // 子 Canvas 必须各自带 GraphicRaycaster 才能接收点击；缺失则报错指引补加。
@@ -191,21 +201,26 @@ public class GameManager : MonoBehaviour
         }
         // 下一关按钮文字现归结算弹窗（LevelCompletePopup）内部管理，此处不再处理
 
-        // 魔法棒道具按钮：按钮自身 Graphic（RoundedImage 圆形背景，Button.targetGraphic）保留 raycastTarget
+        // 魔法棒/提示道具按钮：按钮自身 Graphic（RoundedImage 圆形背景，Button.targetGraphic）保留 raycastTarget
         // 以接收点击；其子节点（图标 Image / 文字）不接收点击，关闭 raycastTarget 减少输入遍历开销
-        if (magicWandButton != null)
-        {
-            var target = magicWandButton.targetGraphic;
-            foreach (var img in magicWandButton.GetComponentsInChildren<Image>())
-            {
-                if (img == target) continue; // 按钮自身 Graphic 保留
-                img.raycastTarget = false;
-            }
-        }
+        DisableButtonChildRaycast(magicWandButton);
+        DisableButtonChildRaycast(tipButton);
 
         // 全屏装饰背景：不接收点击，关闭其 RaycastTarget，让根 Canvas 的 raycaster 在输入事件中
         // 无可遍历 Graphic（兜底 raycaster 组件保留，零开销不破坏链路）。由 Inspector 绑定，不靠名字查找。
         if (background != null) background.raycastTarget = false;
+    }
+
+    /// <summary>关闭按钮子节点 Image 的 raycastTarget，保留按钮自身 targetGraphic 接收点击。</summary>
+    private void DisableButtonChildRaycast(Button btn)
+    {
+        if (btn == null) return;
+        var target = btn.targetGraphic;
+        foreach (var img in btn.GetComponentsInChildren<Image>())
+        {
+            if (img == target) continue; // 按钮自身 Graphic 保留
+            img.raycastTarget = false;
+        }
     }
 
     /// <summary>
@@ -643,6 +658,79 @@ public class GameManager : MonoBehaviour
         lockedCatIndices.Add(idx);
         FeedbackManager.Instance?.Success(); // 与猫咪显现同帧（本期复用 successClip）
         CheckRules();
+    }
+
+    // ================= 提示道具（按优先级给填入/打叉/取消叉）=================
+
+    /// <summary>提示道具按钮点击：收集叉号集 → TipSolver.Pick 选动作 → 执行填入/打叉/取消叉。
+    /// 终态（通关/失败）锁定不处理；无动作给轻触反馈。叉号集每次调用前从 allBlocks 收集，无需维护。</summary>
+    public void UseTip()
+    {
+        if (isLevelCompleted || isLevelFailed) { FeedbackManager.Instance?.Tap(); return; }
+        if (currentSolutions == null || currentSolutions.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
+
+        // 收集当前叉号格集
+        HashSet<int> crossed = new HashSet<int>();
+        for (int i = 0; i < allBlocks.Count; i++)
+        {
+            BlockController b = allBlocks[i];
+            if (b != null && b.hasCross) crossed.Add(i);
+        }
+
+        TipAction action = TipSolver.Pick(gridSize, currentMap, palette != null ? palette.Length : 0, currentSolutions, lockedCatIndices, crossed);
+        if (action == null || action.indices == null || action.indices.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
+
+        switch (action.type)
+        {
+            case TipActionType.FillCat:
+            {
+                int idx = action.indices[0];
+                if (idx < 0 || idx >= allBlocks.Count) { FeedbackManager.Instance?.Tap(); return; }
+                BlockController bc = allBlocks[idx];
+                if (bc == null || bc.hasCat) { FeedbackManager.Instance?.Tap(); return; }
+                // 锁定正解猫（同魔法棒路径）
+                bc.hasCat = true;
+                bc.hasCross = false;
+                bc.ApplyVisualState();
+                bc.PlayCatPop();
+                currentCatCount++;
+                lockedCatIndices.Add(idx);
+                FeedbackManager.Instance?.Success();
+                CheckRules();
+                break;
+            }
+            case TipActionType.SetCross:
+            {
+                // 给目标格打叉（跳过已锁猫格与已叉格）
+                bool any = false;
+                foreach (int idx in action.indices)
+                {
+                    if (idx < 0 || idx >= allBlocks.Count) continue;
+                    BlockController bc = allBlocks[idx];
+                    if (bc == null || bc.hasCat || bc.hasCross) continue;
+                    bc.hasCross = true;
+                    bc.ApplyVisualState();
+                    bc.PlayCrossPunch();
+                    any = true;
+                }
+                if (any) FeedbackManager.Instance?.Exclude(); // 打叉音 + 触觉
+                break;
+            }
+            case TipActionType.RemoveCross:
+            {
+                // 取消错叉（仅移除叉号，不改锁猫状态）
+                foreach (int idx in action.indices)
+                {
+                    if (idx < 0 || idx >= allBlocks.Count) continue;
+                    BlockController bc = allBlocks[idx];
+                    if (bc == null || !bc.hasCross) continue;
+                    bc.hasCross = false;
+                    bc.ApplyVisualState();
+                }
+                FeedbackManager.Instance?.Tap();
+                break;
+            }
+        }
     }
 
     // ================= 关卡失败与复活流程（PRD §3.3 / §3.5 / §4.2-4.4）=================
