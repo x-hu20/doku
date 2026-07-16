@@ -54,10 +54,8 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
     [SerializeField] private Color chestEmptyColor = new Color(0.3f, 0.3f, 0.3f, 0.4f);
 
     [Header("宝箱奖励遮罩（满10关自动弹出，点击任意位置退出）")]
-    [Tooltip("全屏半透明遮罩，点击任意位置退出回结算页。需挂 Button（或其子节点）接收点击")]
+    [Tooltip("全屏半透明遮罩，点击任意位置退出回结算页。需铺满 CompletePopup 且 raycastTarget=true（代码强制开启）")]
     [SerializeField] private Image rewardOverlay;
-    [Tooltip("遮罩上的 Button（点击=退出遮罩），可与 rewardOverlay 同节点")]
-    [SerializeField] private Button rewardOverlayButton;
     [Tooltip("奖励魔法棒图标 Image（Sprite 预制体设 magic_image）。数量 0 时隐藏")]
     [SerializeField] private Image rewardMagicIcon;
     [Tooltip("奖励魔法棒数量文字（如 ×1）")]
@@ -81,12 +79,6 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
         if (nextButtonText != null) nextButtonText.raycastTarget = false;
         // 奖励遮罩自身 Image 必须接收点击（退出用）；运行时确保 raycastTarget=true
         if (rewardOverlay != null) rewardOverlay.raycastTarget = true;
-        // 兼容：若拖了 Button 也绑定（双保险，IPointerClickHandler 已覆盖主路径）
-        if (rewardOverlayButton != null)
-        {
-            rewardOverlayButton.onClick.RemoveAllListeners();
-            rewardOverlayButton.onClick.AddListener(HideReward);
-        }
     }
 
     /// <summary>奖励遮罩激活时，点击弹窗任意位置（遮罩 Image 拦截 raycast）退出回结算页。</summary>
@@ -116,8 +108,8 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
     /// <param name="nextLabel">下一关按钮文案（如 “Level 4” / “All Complete!”）</param>
     /// <param name="nextInteractable">按钮是否可点击：最后一关沿用原语义置 false（待后续「全通关」需求再定）</param>
     /// <param name="onNext">下一关按钮点击回调（通常 GameManager.LoadNextLevel）</param>
-    /// <param name="progress">当前轮已通关数（自上次开箱后），0~9，满10在 GameManager 已归0并置 chestReady</param>
-    /// <param name="chestReady">本关是否触发开箱（满10关）：是则进度条全亮+宝箱抖动切 openbox</param>
+    /// <param name="progress">当前轮已通关数（自上次开箱后），满10关传10。归0在遮罩退出回调后由 GameManager 执行</param>
+    /// <param name="chestReady">本关是否触发开箱（满10关）：是则进度条全亮+宝箱抖动切 openbox+弹遮罩</param>
     public void Show(string title, string nextLabel, bool nextInteractable, Action onNext, int progress, bool chestReady, int rewardMagic, int rewardTip, Action onRewardShown = null, Action onRewardClosed = null)
     {
         if (titleText != null) titleText.text = title ?? "";
@@ -128,6 +120,12 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
             nextButton.onClick.RemoveAllListeners();
             nextButton.onClick.AddListener(() =>
             {
+                // 奖励遮罩激活时，点击穿透到本按钮：转而关闭遮罩，不切关
+                if (rewardOverlay != null && rewardOverlay.gameObject.activeSelf)
+                {
+                    HideReward();
+                    return;
+                }
                 FeedbackManager.Instance?.Tap(); // 按钮点击统一触觉反馈（PRD §6）
                 StopPulse(); // 点击即停引导脉冲，避免切关前残留
                 onNext?.Invoke();
@@ -180,7 +178,8 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
     }
 
     /// <summary>弹出奖励遮罩：显示魔法棒/提示图标与数量（数量 0 隐藏该项），遮罩点击任意位置退出。
-    /// 弹出时触发 onRewardShown 回调（GameManager 据此发放道具——宝箱打开后才+1）。</summary>
+    /// 弹出时触发 onRewardShown 回调（GameManager 据此发放道具——宝箱打开后才+1）。
+    /// 遮罩移到 CompletePopup 根下最末，确保事件层级最高、铺满全屏拦截所有点击（含 NextButton 区域）。</summary>
     private void ShowReward(int rewardMagic, int rewardTip)
     {
         if (rewardOverlay == null) return;
@@ -188,6 +187,8 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
         if (rewardMagicText != null && rewardMagic > 0) rewardMagicText.text = "×" + rewardMagic;
         if (rewardTipIcon != null) rewardTipIcon.gameObject.SetActive(rewardTip > 0);
         if (rewardTipText != null && rewardTip > 0) rewardTipText.text = "×" + rewardTip;
+        // 移到最末子节点（最后渲染 = 事件层级最高），确保遮罩盖住 NextButton 等所有下层 UI
+        rewardOverlay.transform.SetAsLastSibling();
         rewardOverlay.gameObject.SetActive(true);
         _onRewardShown?.Invoke(); // 宝箱打开，发放奖励
         _onRewardShown = null;
