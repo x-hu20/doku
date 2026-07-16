@@ -125,6 +125,34 @@ public static class TweenRunner
         t.localPosition = basePos;
     }
 
+    // ===================== 场景 4.5：循环横向抖动（宝箱满10关引导点击，持续直到点击 Stop）=====================
+    public static void ShakeLoop(Transform t, float amplitude = 10f, float eachMs = 300f)
+    {
+        if (t == null) return;
+        RunExclusive(t, ShakeLoopRoutine(t, amplitude, eachMs / 1000f));
+    }
+
+    private static IEnumerator ShakeLoopRoutine(Transform t, float amp, float eachSec)
+    {
+        Vector3 basePos = t.localPosition;
+        const float freq = 40f;
+        while (true)
+        {
+            float elapsed = 0f;
+            while (elapsed < eachSec)
+            {
+                float k = 1f - elapsed / eachSec;
+                float off = Mathf.Sin(elapsed * freq) * amp * k;
+                t.localPosition = basePos + new Vector3(off, 0f, 0f);
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+            t.localPosition = basePos;
+            float pause = 0f;
+            while (pause < 0.1f) { pause += Time.deltaTime; yield return null; } // 抖动间隔
+        }
+    }
+
     // ===================== 场景 5：下一关按钮弹性亮相 0.0 ->1.25->0.90->1.0 =====================
     public static void ElasticButtonPop(Transform t)
     {

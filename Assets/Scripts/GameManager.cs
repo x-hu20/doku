@@ -65,6 +65,14 @@ public class GameManager : MonoBehaviour
     private int magicWandCount; // 当前魔法棒剩余数量
     private int tipCount;       // 当前提示道具剩余数量
 
+    [Header("阶段宝箱（每10关一轮）")]
+    [Tooltip("每10关一个宝箱，宝箱内魔法棒数量（可配置为0即空箱，仍触发开箱动画）")]
+    [SerializeField] private int chestRewardMagic = 1;
+    [Tooltip("宝箱内提示道具数量（可配置为0）")]
+    [SerializeField] private int chestRewardTip = 1;
+    private int levelsSinceChest;     // 自上次开箱后已通关数（0~9，满10归0）
+    private bool chestReadyThisShow;  // 本结算页是否触发开箱展示（满10关）
+
     private List<BlockController> allBlocks = new List<BlockController>();
     private int currentCatCount; // 当前已锁定小猫数（given + 双击锁定），替代 FindAll 实时遍历，O(1) 读取
     private List<bool[]> currentSolutions; // 本关所有合法解（LoadLevel 时 MapSolver.EnumerateAll），供多解判定/双击沿解/通关校验/魔法棒
@@ -136,6 +144,9 @@ public class GameManager : MonoBehaviour
         // 道具数量初始（关卡1），跨关继承，切关不重置（仅 Start 设一次）
         magicWandCount = initialItemCount;
         tipCount = initialItemCount;
+        // 阶段宝箱计数初始：自上次开箱后0关
+        levelsSinceChest = 0;
+        chestReadyThisShow = false;
 
         // 默认加载 CSV 的第一关
         LoadLevel(currentLevelIndex);
@@ -874,7 +885,16 @@ public class GameManager : MonoBehaviour
         if (completePopup == null) yield break;
         string title = isLastLevel ? "All Levels Completed!" : $"Level {currentLevelIndex + 1} Completed!";
         string nextLabel = isLastLevel ? "All Complete!" : $"Level {currentLevelIndex + 2}";
-        completePopup.Show(title, nextLabel, !isLastLevel, LoadNextLevel);
+        completePopup.Show(title, nextLabel, !isLastLevel, LoadNextLevel, levelsSinceChest, chestReadyThisShow, chestRewardMagic, chestRewardTip,
+            onRewardShown: () => // 宝箱打开（遮罩弹出）时发放道具，红点刷新
+            {
+                magicWandCount += chestRewardMagic;
+                tipCount += chestRewardTip;
+                RefreshMagicWandBadge();
+                RefreshTipBadge();
+            },
+            onRewardClosed: () => levelsSinceChest = 0); // 退出奖励遮罩后归0，下次结算页起从0格
+        chestReadyThisShow = false; // 本结算页开箱展示消费后清除，下关重新判定
     }
 
     // ================= 规则校验与状态刷新 =================
@@ -893,6 +913,13 @@ public class GameManager : MonoBehaviour
             // 通关后道具按钮不可点击，直到进入下一关（LoadLevel 会恢复 interactable）
             if (magicWandButton != null) magicWandButton.interactable = false;
             if (tipButton != null) tipButton.interactable = false;
+            // 阶段宝箱：本关通关计入进度，满10关标记开箱展示。
+            // 奖励发放延迟到宝箱打开（奖励遮罩弹出）时，进度归0延迟到遮罩退出后。
+            levelsSinceChest++;
+            if (levelsSinceChest >= 10)
+            {
+                chestReadyThisShow = true; // 触发开箱动画+遮罩，奖励在遮罩弹出回调中发放
+            }
             bool isLastLevel = currentLevelIndex >= loadedLevels.Count - 1;
             if (progressText != null)
                 progressText.text = isLastLevel ? "All levels completed!" : $"Level {currentLevelIndex + 1} completed!";
