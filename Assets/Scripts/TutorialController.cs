@@ -33,6 +33,8 @@ public class TutorialController : MonoBehaviour
     [SerializeField] private Button hintButton;
     [Tooltip("引导关通关后棋盘下方「start game」按钮，点击进第一关")]
     [SerializeField] private Button startGameButton;
+    [Tooltip("Step1 反应文案后的「Got it!」继续按钮，点击进入 Step2（替代 Tap anywhere）")]
+    [SerializeField] private Button gotItButton;
 
     [Header("聚光灯遮罩（替代橘色底高亮）")]
     [Tooltip("全屏遮罩压暗色（RGBA）。覆盖棋盘其余区域，仅在目标格开洞露出该格")]
@@ -109,6 +111,7 @@ public class TutorialController : MonoBehaviour
             startGameButton.onClick.AddListener(OnStartGame);
         }
         if (hintButton != null) hintButton.gameObject.SetActive(false);
+        HideGotItButton(); // 防御：重置可能残留的脉冲缩放与监听
         ShowFinger(false);
         EnterStep1();
     }
@@ -124,6 +127,7 @@ public class TutorialController : MonoBehaviour
         TweenRunner.FadeOut(bottomText, appearFadeDur);
         TweenRunner.FadeOut(bottomBlock, appearFadeDur);
         if (hintButton != null) hintButton.gameObject.SetActive(false);
+        HideGotItButton();
         if (startGameButton != null)
         {
             TweenRunner.Stop(startGameButton.transform);
@@ -145,22 +149,22 @@ public class TutorialController : MonoBehaviour
         switch (step)
         {
             case Step.Step1_WaitDoubleTap8:
-                if (IsLocked(8)) BeginTransition("One cat per color. Good job!", EnterStep2, waitForTap: true);
+                if (IsLocked(8)) BeginTransition(I18n.Get("tutorial.step1.reaction"), EnterStep2, waitForTap: true);
                 break;
             case Step.Step1_TapContinue:
-                if (AnyPointerDown()) OnTapContinue();
+                // 由「Got it!」按钮 onClick 驱动 OnTapContinue，此处无需轮询输入
                 break;
             case Step.Step2_ExcludeColor2:
                 if (AllCrossed(0, 4, 9, 10, 11, 12)) BeginTransition(null, EnterStep2_DoubleTap7);
                 break;
             case Step.Step2_WaitDoubleTap7:
-                if (IsLocked(7)) BeginTransition("Perfect!", EnterStep3);
+                if (IsLocked(7)) BeginTransition(I18n.Get("tutorial.reaction.perfect"), EnterStep3);
                 break;
             case Step.Step3_ExcludeColor1:
                 if (AllCrossed(2, 3, 6)) BeginTransition(null, EnterStep3_DoubleTap1);
                 break;
             case Step.Step3_WaitDoubleTap1:
-                if (IsLocked(1)) BeginTransition("Amazing!", EnterStep4);
+                if (IsLocked(1)) BeginTransition(I18n.Get("tutorial.reaction.amazing"), EnterStep4);
                 break;
             case Step.Step4_WaitLastCat:
                 if (IsLocked(14)) OnTutorialComplete();
@@ -171,7 +175,7 @@ public class TutorialController : MonoBehaviour
     // ===================== 步骤进入 =====================
     private void EnterStep1()
     {
-        SetTop("Double-tap here to drop your first cat.");
+        SetTop(I18n.Get("tutorial.step1.top"));
         if (bottomText != null) bottomText.gameObject.SetActive(false); // Step1 无下方文案
         HideBottomBlock();
         SetSpotlight(8);
@@ -184,8 +188,8 @@ public class TutorialController : MonoBehaviour
     {
         // 色2 排除阶段：0,4,9,10,11,12 可点（打叉）= 放猫8 的行+列去8，本身三段不连通
         // 遮罩露该排除格集 + 最少桥接（补格8 → 十字），整片连通聚焦
-        SetTop("No two cats in the same row or column.");
-        SetBottom("Tap empty cells to exclude wrong spots.");
+        SetTop(I18n.Get("tutorial.step2.top"));
+        SetBottom(I18n.Get("tutorial.step2.bottom"));
         ShowFinger(false);
         SetSpotlightRegion(new HashSet<int> { 0, 4, 9, 10, 11, 12 });
         SetAllowedExcludeOnly(0, 4, 9, 10, 11, 12);
@@ -195,8 +199,8 @@ public class TutorialController : MonoBehaviour
     private void EnterStep3()
     {
         // 色1 排除阶段：2,3,6 可点，本身已连通（L 形），无需补桥
-        SetTop("Social distancing!\nCats can't be adjacent to each other.");
-        SetBottom("Swipe across cells to exclude them all at once!");
+        SetTop(I18n.Get("tutorial.step3.top"));
+        SetBottom(I18n.Get("tutorial.step3.bottom"));
         ShowFinger(false);
         SetSpotlightRegion(new HashSet<int> { 2, 3, 6 });
         SetAllowedExcludeOnly(2, 3, 6);
@@ -205,7 +209,7 @@ public class TutorialController : MonoBehaviour
 
     private void EnterStep4()
     {
-        SetTop("Where's the last cat? Hunt it down!");
+        SetTop(I18n.Get("tutorial.step4.top"));
         ShowFinger(false);
         ClearSpotlight();
         // 2.4 下方是 hint 按钮非文案：隐藏 bottomText 与 bottomBlock
@@ -214,6 +218,9 @@ public class TutorialController : MonoBehaviour
         if (hintButton != null)
         {
             hintButton.gameObject.SetActive(true);
+            // 按钮文案走本地化表（预制体静态文案改为运行时表驱动）
+            var hintLbl = hintButton.GetComponentInChildren<TMP_Text>();
+            if (hintLbl != null) hintLbl.text = I18n.Get("tutorial.hint_button");
             hintButton.onClick.RemoveAllListeners();
             hintButton.onClick.AddListener(() => gameManager.UseTip());
         }
@@ -224,22 +231,22 @@ public class TutorialController : MonoBehaviour
     // 排除阶段完成后进入双击引导子步（由过渡协程在停顿后调用）
     private void EnterStep2_DoubleTap7()
     {
-        SetTop("Only one cell left this color");
+        SetTop(I18n.Get("tutorial.doubletap.top"));
         SetSpotlight(7);
         PositionFinger(7);
         ShowFinger(true);
-        SetBottom("Double-tap to claim it!");
+        SetBottom(I18n.Get("tutorial.doubletap.bottom"));
         SetAllowed(7);
         step = Step.Step2_WaitDoubleTap7;
     }
 
     private void EnterStep3_DoubleTap1()
     {
-        SetTop("Only one cell left this color");
+        SetTop(I18n.Get("tutorial.doubletap.top"));
         SetSpotlight(1);
         PositionFinger(1);
         ShowFinger(true);
-        SetBottom("Double-tap to claim it!");
+        SetBottom(I18n.Get("tutorial.doubletap.bottom"));
         SetAllowed(1);
         step = Step.Step3_WaitDoubleTap1;
     }
@@ -274,9 +281,9 @@ public class TutorialController : MonoBehaviour
 
         if (waitForTap)
         {
-            // 展示「点击任意位置继续」并进入等待态；step 切到 Step1_TapContinue 占位，
+            // 展示「Got it!」按钮并进入等待态；step 切到 Step1_TapContinue 占位，
             // 避免仍停在 Step1_WaitDoubleTap8 因格8已锁被 Update 重复触发
-            SetBottom("Tap anywhere to continue");
+            ShowGotItButton();
             pendingTapContinue = enter;
             step = Step.Step1_TapContinue;
             transitioning = false;
@@ -287,13 +294,14 @@ public class TutorialController : MonoBehaviour
         transitioning = false;
     }
 
-    /// <summary>Step1_TapContinue 态收到任意点击：渐出反应文案/下方文案，再渐入下一步。</summary>
+    /// <summary>Step1_TapContinue 态点击「Got it!」按钮：渐出反应文案/按钮，再渐入下一步。</summary>
     private void OnTapContinue()
     {
         var enter = pendingTapContinue;
         pendingTapContinue = null;
         if (enter == null) return;
         FeedbackManager.Instance?.Tap();
+        HideGotItButton();
         if (transitionRoutine != null) StopCoroutine(transitionRoutine);
         transitionRoutine = StartCoroutine(FinishTapContinue(enter));
     }
@@ -301,7 +309,7 @@ public class TutorialController : MonoBehaviour
     private IEnumerator FinishTapContinue(System.Action enter)
     {
         transitioning = true;
-        // 渐出反应文案与「Tap anywhere to continue」，等淡出播完再进下一步
+        // 渐出反应文案，等淡出播完再进下一步（「Got it!」按钮已在 OnTapContinue 隐藏）
         TweenRunner.FadeOut(topText, appearFadeDur);
         TweenRunner.FadeOut(topBlock, appearFadeDur);
         TweenRunner.FadeOut(bottomText, appearFadeDur);
@@ -332,11 +340,15 @@ public class TutorialController : MonoBehaviour
         TweenRunner.FadeOut(bottomText, appearFadeDur);
         TweenRunner.FadeOut(bottomBlock, appearFadeDur);
         if (hintButton != null) hintButton.gameObject.SetActive(false);
+        HideGotItButton();
         allowedCells.Clear();
         excludeOnlyCells.Clear();
         if (startGameButton != null)
         {
             startGameButton.gameObject.SetActive(true);
+            // 按钮文案走本地化表（预制体静态文案改为运行时表驱动）
+            var startLbl = startGameButton.GetComponentInChildren<TMP_Text>();
+            if (startLbl != null) startLbl.text = I18n.Get("tutorial.start_button");
             // 与结算页 NextButton 同款动效：持续脉冲引导点击
             TweenRunner.PulseLoop(startGameButton.transform, peak: 1.10f, halfMs: 600f);
         }
@@ -356,12 +368,27 @@ public class TutorialController : MonoBehaviour
     // ===================== 辅助 =====================
     private bool IsLocked(int idx) { var b = Blocks; return idx >= 0 && idx < b.Count && b[idx] != null && b[idx].hasCat; }
 
-    /// <summary>任意位置点击（鼠标左键按下或单指触屏 Began）。用于 Step1_TapContinue 等待点击继续。</summary>
-    private static bool AnyPointerDown()
+    /// <summary>显示「Got it!」继续按钮：设文案（走本地化表）+ 绑定 onClick + 持续脉冲引导点击。</summary>
+    private void ShowGotItButton()
     {
-        if (Input.GetMouseButtonDown(0)) return true;
-        if (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began) return true;
-        return false;
+        if (gotItButton == null) return;
+        gotItButton.gameObject.SetActive(true);
+        var lbl = gotItButton.GetComponentInChildren<TMP_Text>();
+        if (lbl != null) lbl.text = I18n.Get("tutorial.got_it");
+        gotItButton.onClick.RemoveAllListeners();
+        gotItButton.onClick.AddListener(OnTapContinue);
+        // 与 start game 按钮同款脉冲，引导点击
+        TweenRunner.PulseLoop(gotItButton.transform, peak: 1.10f, halfMs: 600f);
+    }
+
+    /// <summary>隐藏「Got it!」按钮：停脉冲 + 复位缩放 + 失活，避免残留监听/动效。</summary>
+    private void HideGotItButton()
+    {
+        if (gotItButton == null) return;
+        TweenRunner.Stop(gotItButton.transform);
+        gotItButton.transform.localScale = Vector3.one;
+        gotItButton.onClick.RemoveAllListeners();
+        gotItButton.gameObject.SetActive(false);
     }
     private bool AllCrossed(params int[] idxs)
     {

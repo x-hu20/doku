@@ -116,6 +116,8 @@ public class GameManager : MonoBehaviour
 
     void Start()
     {
+        // 本地化文案表优先加载：后续 levelText/弹窗等所有 UI 文案取值依赖此表
+        I18n.Init();
         // 顶部 UI 已改为预制体在场景中摆放，此处仅填充动态规则文本并校验引用，不再运行时拼装节点
         loadedLevels = LevelTableLoader.Load("levels");
 
@@ -134,7 +136,7 @@ public class GameManager : MonoBehaviour
         if (loadedLevels == null || loadedLevels.Count == 0)
         {
             Debug.LogError("[GameManager] 无法从 CSV 中读取到任何有效的关卡数据，请检查 Resources 文件夹下的 levels.csv！");
-            if (levelText != null) levelText.text = "No levels!";
+            if (levelText != null) levelText.text = I18n.Get("game.no_levels");
             return;
         }
 
@@ -299,7 +301,7 @@ public class GameManager : MonoBehaviour
         // 如果超出了最大关卡，说明全通关了
         if (index >= loadedLevels.Count)
         {
-            if (levelText != null) levelText.text = "All levels completed!";
+            if (levelText != null) levelText.text = I18n.Get("game.all_completed");
             if (progressText != null) progressText.text = "";
             if (completePopup != null) completePopup.Hide();
             yield break; // 结束协程
@@ -691,7 +693,7 @@ public class GameManager : MonoBehaviour
     {
         if (progressText != null)
         {
-            progressText.text = "Not Cat!!!";
+            progressText.text = I18n.Get("game.not_cat");
             TweenRunner.TextPunch(progressText.transform); // 顶部 HUD 文本放大回弹
             if (errorHintRoutine != null) StopCoroutine(errorHintRoutine);
             errorHintRoutine = StartCoroutine(RestoreStatusAfter(errorHintDuration));
@@ -891,10 +893,10 @@ public class GameManager : MonoBehaviour
         // 避免弹窗瞬间盖住反馈。延迟期间 isLevelFailed 已锁棋盘，玩家完整看到最后一次犯错的反馈。
         if (failPopup != null)
         {
-            var config = new ModalConfig("Level Failed", new List<ModalButtonDef>
+            var config = new ModalConfig(I18n.Get("modal.level_failed.title"), new List<ModalButtonDef>
             {
-                new ModalButtonDef("3 more lives", OnReviveRequested),
-                new ModalButtonDef("restart", OnRestartRequested),
+                new ModalButtonDef(I18n.Get("modal.level_failed.revive"), OnReviveRequested),
+                new ModalButtonDef(I18n.Get("modal.level_failed.restart"), OnRestartRequested),
             });
             if (failPopupRoutine != null) StopCoroutine(failPopupRoutine);
             failPopupRoutine = StartCoroutine(ShowFailPopupAfter(failPopupDelay, config));
@@ -953,8 +955,8 @@ public class GameManager : MonoBehaviour
         yield return new WaitForSeconds(delay);
         completePopupRoutine = null;
         if (completePopup == null) yield break;
-        string title = isLastLevel ? "All Levels Completed!" : $"Level {currentLevelIndex} Completed!";
-        string nextLabel = isLastLevel ? "All Complete!" : $"Level {currentLevelIndex + 1}";
+        string title = isLastLevel ? I18n.Get("game.all_completed_title") : I18n.Getf("game.level_completed_title", currentLevelIndex);
+        string nextLabel = isLastLevel ? I18n.Get("game.all_complete_button") : I18n.Getf("game.level", currentLevelIndex + 1);
         completePopup.Show(title, nextLabel, !isLastLevel, LoadNextLevel, levelsSinceChest, chestReadyThisShow, chestRewardMagic, chestRewardTip,
             onRewardShown: () => // 宝箱打开（遮罩弹出）时发放道具，红点刷新
             {
@@ -994,7 +996,7 @@ public class GameManager : MonoBehaviour
             }
             bool isLastLevel = currentLevelIndex >= loadedLevels.Count - 1;
             if (progressText != null)
-                progressText.text = isLastLevel ? "All levels completed!" : $"Level {currentLevelIndex} completed!";
+                progressText.text = isLastLevel ? I18n.Get("game.all_completed") : I18n.Getf("game.level_completed", currentLevelIndex);
 
             // 通关音效 + 触觉：延迟到当前格子 successClip 播完再播 finishClip，避免与双击/魔法棒锁猫的 Success 叠加
             FeedbackManager.Instance?.FinishAfterSuccessClip();
@@ -1030,8 +1032,8 @@ public class GameManager : MonoBehaviour
     void UpdateStatusText(int correctCount)
     {
         if (levelText != null)
-            levelText.text = $"Level {currentLevelIndex}";
+            levelText.text = I18n.Getf("game.level", currentLevelIndex);
         if (progressText != null)
-            progressText.text = $"Progress: {correctCount} / {gridSize}";
+            progressText.text = I18n.Getf("game.progress", correctCount, gridSize);
     }
 }
