@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 
 /// <summary>
 /// 轻量协程补间工具：零外部依赖（替代 DOTween），用 Time.deltaTime 逐帧驱动。
@@ -125,7 +126,39 @@ public static class TweenRunner
         t.localPosition = basePos;
     }
 
-    // ===================== 场景 4.5：循环横向抖动（宝箱满10关引导点击，持续直到点击 Stop）=====================
+    // ===================== 场景 3.6：手指双击循环（引导关模拟双击手势，缩放2次循环直到 Stop）=====================
+    /// <param name="t">手指 Transform</param>
+    /// <param name="pressScale">按下时缩放（<1 模拟按压）</param>
+    /// <param name="tapMs">单次点击时长（毫秒）</param>
+    /// <param name="gapMs">双击与双击之间的间隔（毫秒），拉大避免像连续点击</param>
+    public static void FingerDoubleTapLoop(Transform t, float pressScale = 0.85f, float tapMs = 120f, float gapMs = 975f)
+    {
+        if (t == null) return;
+        RunExclusive(t, FingerDoubleTapRoutine(t, pressScale, tapMs / 1000f, gapMs / 1000f));
+    }
+
+    private static IEnumerator FingerDoubleTapRoutine(Transform t, float press, float tapSec, float gapSec)
+    {
+        Vector3 baseScale = Vector3.one;
+        // 弹入亮相（0 → 1），避免手指瞬切出现
+        t.localScale = Vector3.zero;
+        yield return ScaleTo(t, 1f, 0.25f);
+        t.localScale = baseScale;
+        while (true)
+        {
+            for (int k = 0; k < 2; k++) // 双击两次
+            {
+                yield return ScaleTo(t, press, tapSec); // 按下
+                yield return ScaleTo(t, 1f, tapSec);    // 抬起
+                if (k == 0) { float p = 0f; while (p < 0.06f) { p += Time.deltaTime; yield return null; } } // 两下间短停顿，区分两次点击
+            }
+            t.localScale = baseScale;
+            float g = 0f;
+            while (g < gapSec) { g += Time.deltaTime; yield return null; } // 双击之间的间隔
+        }
+    }
+
+
     public static void ShakeLoop(Transform t, float amplitude = 10f, float eachMs = 300f)
     {
         if (t == null) return;
@@ -235,6 +268,86 @@ public static class TweenRunner
             yield return MoveLocalY(t, baseLocal.y, downSec);
         }
         t.localPosition = baseLocal;
+    }
+
+    // ===================== 渐入/渐出（alpha，引导关文案/遮罩/手指缓慢出现与消失）=====================
+    // exclusive=true（默认）走 RunExclusive，与同 Transform 的其他补间互斥；
+    // exclusive=false 不入注册表，可与同 Transform 的缩放循环并存（手指 alpha 淡入淡出 vs 双击缩放循环）。
+    public static void FadeIn(Graphic g, float dur = 0.3f, bool exclusive = true)
+    {
+        if (g == null) return;
+        if (dur <= 0f) { var c = g.color; c.a = 1f; g.color = c; return; }
+        if (exclusive) RunExclusive(g.transform, FadeRoutine(g, dur));
+        else Host.StartCoroutine(FadeRoutine(g, dur));
+    }
+
+    public static void FadeOut(Graphic g, float dur = 0.3f, bool exclusive = true)
+    {
+        if (g == null) return;
+        if (dur <= 0f) { var c = g.color; c.a = 0f; g.color = c; return; }
+        if (exclusive) RunExclusive(g.transform, FadeOutRoutine(g, dur));
+        else Host.StartCoroutine(FadeOutRoutine(g, dur));
+    }
+
+    private static IEnumerator FadeRoutine(Graphic g, float dur)
+    {
+        Color c = g.color;
+        c.a = 0f;
+        g.color = c;
+        float e = 0f;
+        while (e < dur)
+        {
+            e += Time.deltaTime;
+            c.a = Mathf.Lerp(0f, 1f, EaseOutCubic(Mathf.Clamp01(e / dur)));
+            g.color = c;
+            yield return null;
+        }
+        c.a = 1f;
+        g.color = c;
+    }
+
+    private static IEnumerator FadeOutRoutine(Graphic g, float dur)
+    {
+        Color c = g.color;
+        float startA = c.a;
+        float e = 0f;
+        while (e < dur)
+        {
+            e += Time.deltaTime;
+            c.a = Mathf.Lerp(startA, 0f, EaseOutCubic(Mathf.Clamp01(e / dur)));
+            g.color = c;
+            yield return null;
+        }
+        c.a = 0f;
+        g.color = c;
+    }
+
+    /// <summary>CanvasGroup 渐入/渐出（整组遮罩淡入淡出，不触碰子节点 raycast/scale）。</summary>
+    public static void FadeIn(CanvasGroup cg, float dur = 0.3f)
+    {
+        if (cg == null) return;
+        if (dur <= 0f) { cg.alpha = 1f; return; }
+        RunExclusive(cg.transform, FadeCGRoutine(cg, dur, 1f));
+    }
+
+    public static void FadeOut(CanvasGroup cg, float dur = 0.3f)
+    {
+        if (cg == null) return;
+        if (dur <= 0f) { cg.alpha = 0f; return; }
+        RunExclusive(cg.transform, FadeCGRoutine(cg, dur, 0f));
+    }
+
+    private static IEnumerator FadeCGRoutine(CanvasGroup cg, float dur, float target)
+    {
+        float startA = cg.alpha;
+        float e = 0f;
+        while (e < dur)
+        {
+            e += Time.deltaTime;
+            cg.alpha = Mathf.Lerp(startA, target, EaseOutCubic(Mathf.Clamp01(e / dur)));
+            yield return null;
+        }
+        cg.alpha = target;
     }
 
     // ===================== 底层缓动原语 =====================

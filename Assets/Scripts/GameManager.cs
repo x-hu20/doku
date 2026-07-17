@@ -28,6 +28,8 @@ public class GameManager : MonoBehaviour
     [SerializeField] private TMP_Text progressText;
     [Tooltip("RuleBanner 内三块规则文本节点，按顺序绑定（仅运行时填充 .text，不创建节点）")]
     [SerializeField] private TMP_Text[] ruleTexts;
+    [Tooltip("规则横幅容器（含背景），引导关隐藏。留空则仅隐藏 ruleTexts 文本")]
+    [SerializeField] private Transform ruleBanner;
 
     [Header("反馈音频素材（拖入 Assets/Audio 下对应 mp3；启动时注入 FeedbackManager 实现预加载）")]
     [Tooltip("单击/滑动排除音效")]
@@ -52,6 +54,8 @@ public class GameManager : MonoBehaviour
     [SerializeField] private Button magicWandButton;
     [Tooltip("提示道具按钮（棋盘下方，与魔法棒并列），按优先级给填入/打叉/取消叉提示")]
     [SerializeField] private Button tipButton;
+    [Tooltip("新手引导关控制器（挂场景中，level 0 时启用）")]
+    [SerializeField] private TutorialController tutorialController;
 
     [Header("道具数量与红点（Inspector 拖拽）")]
     [Tooltip("每关初始道具数量（魔法棒与提示各自独立计数）")]
@@ -78,6 +82,12 @@ public class GameManager : MonoBehaviour
     private List<bool[]> currentSolutions; // 本关所有合法解（LoadLevel 时 MapSolver.EnumerateAll），供多解判定/双击沿解/通关校验/魔法棒
     private HashSet<int> lockedCatIndices; // 本关已锁猫一维索引集（given + 双击 + 魔法棒），阵营判定与沿解校验用
     private int[] currentMap; // 本关地图颜色数组（LoadLevel 时填充），供魔法棒选格器读取颜色
+    internal bool isTutorial; // 新手引导关（level 0）：隐藏常规 UI，点击受 TutorialController 限制，通关由引导检测触发
+
+    /// <summary>棋盘所有格子（引导关 TutorialController 查询/操作用）。</summary>
+    internal List<BlockController> AllBlocks => allBlocks;
+    /// <summary>当前关卡尺寸 N（引导关格索引换算用）。</summary>
+    internal int GridSize => gridSize;
     // 对象池：切换关卡时不销毁格子，回收入池复用，避免高频 Instantiate/Destroy 造成内存碎片与耗时
     private readonly Queue<BlockController> blockPool = new Queue<BlockController>();
 
@@ -244,6 +254,20 @@ public class GameManager : MonoBehaviour
         if (background != null) background.raycastTarget = false;
     }
 
+    /// <summary>切换常规关卡 UI 显隐：引导关(level 0)隐藏 levelText/progressText/RuleBanner/血点/道具，仅留棋盘。
+    /// 血点通过 livesController.lifeIcons 逐个隐藏（LivesController 节点与血点容器分离）。</summary>
+    internal void HideLevelUI(bool hide)
+    {
+        if (levelText != null) levelText.gameObject.SetActive(!hide);
+        if (progressText != null) progressText.gameObject.SetActive(!hide);
+        if (ruleBanner != null) ruleBanner.gameObject.SetActive(!hide);
+        if (livesController != null && livesController.lifeIcons != null)
+            foreach (var icon in livesController.lifeIcons)
+                if (icon != null) icon.gameObject.SetActive(!hide);
+        if (magicWandButton != null) magicWandButton.gameObject.SetActive(!hide);
+        if (tipButton != null) tipButton.gameObject.SetActive(!hide);
+    }
+
     /// <summary>关闭按钮子节点 Image 的 raycastTarget，保留按钮自身 targetGraphic 接收点击。</summary>
     private void DisableButtonChildRaycast(Button btn)
     {
@@ -281,6 +305,11 @@ public class GameManager : MonoBehaviour
             yield break; // 结束协程
         }
 
+        // 回写当前关卡索引：LoadLevel(index) 必须同步 currentLevelIndex，否则
+        // 教程→第1关（OnStartGame 调 LoadLevel(1)）后 currentLevelIndex 仍为 0，
+        // 第1关失败点 restart 会 LoadLevel(0) 误回教程。越界路径上方已 yield break，不会污染。
+        currentLevelIndex = index;
+
         // 回收当前格子入对象池（不销毁），交互瞬间失效，防止异步期间玩家连点
         foreach (BlockController bc in allBlocks)
         {
@@ -295,6 +324,10 @@ public class GameManager : MonoBehaviour
         currentSolutions = null; // 重置解集，待下方枚举填充
         isLevelCompleted = false; // 新关卡开始，解锁棋盘输入
         isLevelFailed = false; // 复位失败锁，允许新关卡正常交互（PRD §7.5）
+        // 引导关判定：level 0 隐藏常规 UI，启动引导流程；非引导关恢复 UI
+        isTutorial = (index == 0);
+        HideLevelUI(isTutorial);
+        if (!isTutorial && tutorialController != null) tutorialController.EndTutorial(); // 离开引导关清理
         // 道具数量跨关继承（不每关重置）；按钮恢复可点击（通关时被锁），刷新红点显示当前数量
         if (magicWandButton != null) magicWandButton.interactable = true;
         if (tipButton != null) tipButton.interactable = true;
@@ -414,6 +447,10 @@ public class GameManager : MonoBehaviour
         }
 
         UpdateStatusText();
+
+        // 引导关格子生成完毕，启动引导流程
+        if (isTutorial && tutorialController != null)
+            tutorialController.StartTutorial(this);
     }
 
     // ================= 单击/双击/滑动 交互协调 =================
@@ -430,6 +467,13 @@ public class GameManager : MonoBehaviour
             FeedbackManager.Instance?.Tap();
             return;
         }
+        // 引导关：仅当前允许格支持点击，其他格完全无响应（不触发震动/状态变更）
+        if (isTutorial && tutorialController != null && !tutorialController.IsCellAllowed(block))
+        {
+            return;
+        }
+        // 引导关排除格：触碰一律视为单击翻叉，绝不走双击锁猫/判错（避免排除格误双击→点错扣血）
+        bool treatAsExcludeOnly = isTutorial && tutorialController != null && tutorialController.IsExcludeOnly(block);
         // 已锁定猫的格子（given 或双击锁定）/ 错误锁定格：不改变状态，仅给一致的轻触反馈，
         // 保证玩家在棋盘上任何一次点击都收到统一的 Selection 触觉
         if (block.hasCat || block.isErrorLocked)
@@ -442,12 +486,32 @@ public class GameManager : MonoBehaviour
         hasSlid = false;
         lastSlidBlock = block;
 
-        // 双击判定（锁猫）：该格仍有未应用的待翻转（即上一次按下在阈值内）→ 第二次按下，触发双击
+        // 引导关排除格（遮罩露出的排除格）：幂等加叉 + 立即应用 + 只接收第一次点击（已叉则无反应）。
+        // 不走延迟/双击，杜绝阈值内二次点击的歧义。滑动复用 swipeTargetState（起始格也置叉）。
+        if (treatAsExcludeOnly)
+        {
+            swipeTargetState = true;
+            if (block.hasCross) return; // 已叉：二次点击无反应
+            CommitPendingToggle(); // 提交他格未决翻转
+            block.hasCross = true;
+            block.ApplyVisualState();
+            block.PlayCrossPunch();
+            FeedbackManager.Instance?.Exclude();
+            pendingToggleBlock = null; // 排除格不留待决翻转
+            return;
+        }
+
+        // 双击判定（锁猫）：该格仍有未应用的待翻转（阈值内第二次按下）→ 触发双击。
+        // 引导关非正解格的双击不判错（最后一只猫猎杀阶段），识别为两次单击：cross、取消cross。
         if (pendingToggleBlock == block && pendingToggleRoutine != null)
         {
-            CancelPendingToggle(); // 取消未显示的 cross 翻转，杜绝双击锁猫时的闪烁
-            ExecuteDoubleClick(block);
-            return;
+            if (!isTutorial || CanLockAlongSolution(block))
+            {
+                CancelPendingToggle(); // 取消未显示的 cross 翻转，杜绝双击锁猫时的闪烁
+                ExecuteDoubleClick(block);
+                return;
+            }
+            // 引导关 + 非正解：不升级双击，落入下方单击路径（提交第一次 cross，再排取消 cross）
         }
 
         // 单击：计算目标状态，延迟应用（阈值内若再来一次同格按下则升级为双击）
@@ -475,6 +539,8 @@ public class GameManager : MonoBehaviour
         if (!isPointerDown || block == null) return;
         if (block.hasCat) return;
         if (block == lastSlidBlock) return; // 去重防抖：手指在本格内摩擦不重复处理
+        // 引导关：滑动仅限允许格，非允许格跳过（不刷叉）
+        if (isTutorial && tutorialController != null && !tutorialController.IsCellAllowed(block)) return;
 
         hasSlid = true; // 标记本次为滑动，松开时的 click 将被抑制
 
@@ -702,7 +768,8 @@ public class GameManager : MonoBehaviour
         if (currentSolutions == null || currentSolutions.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
 
         // 数量 0：调激励广告，奖励到账后 +1 刷新红点，不立即执行（玩家再点才使用）
-        if (tipCount <= 0)
+        // 引导关(isTutorial)免费使用，不走广告也不扣数量
+        if (!isTutorial && tipCount <= 0)
         {
             AdManager.Instance?.ShowRewardedAd(
                 onRewarded: () =>
@@ -725,9 +792,12 @@ public class GameManager : MonoBehaviour
         TipAction action = TipSolver.Pick(gridSize, currentMap, palette != null ? palette.Length : 0, currentSolutions, lockedCatIndices, crossed);
         if (action == null || action.indices == null || action.indices.Count == 0) { FeedbackManager.Instance?.Tap(); return; }
 
-        // 有动作可执行：扣减并刷新红点（棋盘即将发生变化）
-        tipCount--;
-        RefreshTipBadge();
+        // 有动作可执行：扣减并刷新红点（棋盘即将发生变化）。引导关免费不扣
+        if (!isTutorial)
+        {
+            tipCount--;
+            RefreshTipBadge();
+        }
 
         switch (action.type)
         {
@@ -883,8 +953,8 @@ public class GameManager : MonoBehaviour
         yield return new WaitForSeconds(delay);
         completePopupRoutine = null;
         if (completePopup == null) yield break;
-        string title = isLastLevel ? "All Levels Completed!" : $"Level {currentLevelIndex + 1} Completed!";
-        string nextLabel = isLastLevel ? "All Complete!" : $"Level {currentLevelIndex + 2}";
+        string title = isLastLevel ? "All Levels Completed!" : $"Level {currentLevelIndex} Completed!";
+        string nextLabel = isLastLevel ? "All Complete!" : $"Level {currentLevelIndex + 1}";
         completePopup.Show(title, nextLabel, !isLastLevel, LoadNextLevel, levelsSinceChest, chestReadyThisShow, chestRewardMagic, chestRewardTip,
             onRewardShown: () => // 宝箱打开（遮罩弹出）时发放道具，红点刷新
             {
@@ -902,6 +972,8 @@ public class GameManager : MonoBehaviour
     // 直接同步判定胜利与刷新状态，剥离原先的延迟协程依赖（消除 WaitForEndOfFrame 引发的 Batching 中断）。
     void CheckRules()
     {
+        // 引导关不走标准通关（不弹 CompletePopup），由 TutorialController 检测最后一只锁触发
+        if (isTutorial) return;
         // 已锁定的小猫数（given + 双击锁定；错误格无法锁猫，故达标即所有正解猫被点出）
         int correctCount = currentCatCount;
 
@@ -922,7 +994,7 @@ public class GameManager : MonoBehaviour
             }
             bool isLastLevel = currentLevelIndex >= loadedLevels.Count - 1;
             if (progressText != null)
-                progressText.text = isLastLevel ? "All levels completed!" : $"Level {currentLevelIndex + 1} completed!";
+                progressText.text = isLastLevel ? "All levels completed!" : $"Level {currentLevelIndex} completed!";
 
             // 通关音效 + 触觉：延迟到当前格子 successClip 播完再播 finishClip，避免与双击/魔法棒锁猫的 Success 叠加
             FeedbackManager.Instance?.FinishAfterSuccessClip();
@@ -958,7 +1030,7 @@ public class GameManager : MonoBehaviour
     void UpdateStatusText(int correctCount)
     {
         if (levelText != null)
-            levelText.text = $"Level {currentLevelIndex + 1}";
+            levelText.text = $"Level {currentLevelIndex}";
         if (progressText != null)
             progressText.text = $"Progress: {correctCount} / {gridSize}";
     }

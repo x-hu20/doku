@@ -177,6 +177,7 @@ MonoBehaviour:
   isGiven: 0
   hasCat: 0
   hasCross: 0
+  isErrorLocked: 0
 --- !u!1 &3452568323484021942
 GameObject:
   m_ObjectHideFlags: 0
