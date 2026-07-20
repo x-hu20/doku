@@ -13,7 +13,7 @@ using TMPro;
 ///   遮罩挂在 TutorialUI 所在 Canvas（Dynamic_HUD，sortingOrder 高于棋盘）下作首子节点，
 ///   故盖在棋盘之上、文案/手指之下；洞内透明 → 露出下方棋盘格与手指。
 /// - 通关不走 CheckRules（GameManager.isTutorial 时跳过），由本控制器检测最后一只锁触发，显示 start game 按钮。
-/// - 提示道具 2.4 免费但逻辑一致（GameManager.UseTip isTutorial 不扣数量）。
+/// - 提示道具引导关免费但逻辑一致（ItemInventory.GateTip(isTutorial) 不扣数量）。
 /// 步骤锁定猫路径：格8 → 格7 → 格1 → 格14（构成合法解）。
 /// </summary>
 public class TutorialController : MonoBehaviour
@@ -23,20 +23,20 @@ public class TutorialController : MonoBehaviour
     [SerializeField] private TMP_Text topText;
     [Tooltip("棋盘上方文案背景色块 Image（固定大小，随文案同步显隐，出现时震荡1次）")]
     [SerializeField] private Image topBlock;
-    [Tooltip("棋盘下方文案 TMP_Text（2.4 阶段会隐藏，改显示提示按钮）")]
+    [Tooltip("棋盘下方文案 TMP_Text（Step4 阶段隐藏，由 hintButton 取代）")]
     [SerializeField] private TMP_Text bottomText;
     [Tooltip("棋盘下方文案背景色块 Image（固定大小，随文案同步显隐，出现时震荡1次）")]
     [SerializeField] private Image bottomBlock;
     [Tooltip("手指 Image（Sprite=click_image.png），定位到目标格上方，循环双击缩放动画")]
     [SerializeField] private Image finger;
-    [Tooltip("2.4 阶段棋盘下方「A quick hint」按钮，绑定提示道具（引导关免费）")]
+    [Tooltip("Step4 阶段棋盘下方「A quick hint」按钮，绑定提示道具（引导关免费）")]
     [SerializeField] private Button hintButton;
     [Tooltip("引导关通关后棋盘下方「start game」按钮，点击进第一关")]
     [SerializeField] private Button startGameButton;
-    [Tooltip("Step1 反应文案后的「Got it!」继续按钮，点击进入 Step2（替代 Tap anywhere）")]
+    [Tooltip("Step1 反应文案后的「Got it!」继续按钮，点击进入 Step2")]
     [SerializeField] private Button gotItButton;
 
-    [Header("聚光灯遮罩（替代橘色底高亮）")]
+    [Header("聚光灯遮罩")]
     [Tooltip("全屏遮罩压暗色（RGBA）。覆盖棋盘其余区域，仅在目标格开洞露出该格")]
     [SerializeField] private Color spotlightColor = new Color(0.02f, 0.02f, 0.03f, 0.85f);
     [Tooltip("开洞比目标格四周外扩的像素边距，使整格（含圆角）完整露出")]
@@ -74,6 +74,12 @@ public class TutorialController : MonoBehaviour
     private Canvas fingerCanvas; // 手指独立 Canvas（overrideSorting）使其渲染在最上层
     private readonly List<RectTransform> stripPool = new List<RectTransform>(); // 条带复用池
     private readonly List<int> spotlightCells = new List<int>(); // 当前开洞目标格集（已含桥接，保证连通）
+    // UpdateSpotlightHole 每帧复用缓冲（零 GC）：洞矩形 / y 边界 / 区间并集 / 补集 / 世界坐标四角
+    private readonly List<(float x0, float y0, float x1, float y1)> _holes = new List<(float, float, float, float)>();
+    private readonly List<float> _ys = new List<float>();
+    private readonly List<(float lo, float hi)> _iv = new List<(float lo, float hi)>();
+    private readonly List<(float lo, float hi)> _complement = new List<(float lo, float hi)>();
+    private readonly Vector3[] _worldCorners = new Vector3[4];
 
     // 步骤过渡：完成一步后停顿一拍再出现下一步文案/遮罩，避免文案瞬切
     private bool transitioning;
@@ -158,13 +164,13 @@ public class TutorialController : MonoBehaviour
                 if (AllCrossed(0, 4, 9, 10, 11, 12)) BeginTransition(null, EnterStep2_DoubleTap7);
                 break;
             case Step.Step2_WaitDoubleTap7:
-                if (IsLocked(7)) BeginTransition(I18n.Get("tutorial.reaction.perfect"), EnterStep3);
+                if (IsLocked(7)) BeginTransition(I18n.Get("tutorial.reaction.perfect"), EnterStep3, delay: 0.5f);
                 break;
             case Step.Step3_ExcludeColor1:
                 if (AllCrossed(2, 3, 6)) BeginTransition(null, EnterStep3_DoubleTap1);
                 break;
             case Step.Step3_WaitDoubleTap1:
-                if (IsLocked(1)) BeginTransition(I18n.Get("tutorial.reaction.amazing"), EnterStep4);
+                if (IsLocked(1)) BeginTransition(I18n.Get("tutorial.reaction.amazing"), EnterStep4, delay: 0.5f);
                 break;
             case Step.Step4_WaitLastCat:
                 if (IsLocked(14)) OnTutorialComplete();
@@ -212,13 +218,13 @@ public class TutorialController : MonoBehaviour
         SetTop(I18n.Get("tutorial.step4.top"));
         ShowFinger(false);
         ClearSpotlight();
-        // 2.4 下方是 hint 按钮非文案：隐藏 bottomText 与 bottomBlock
+        // Step4 下方是 hint 按钮非文案：隐藏 bottomText 与 bottomBlock
         if (bottomText != null) bottomText.gameObject.SetActive(false);
         HideBottomBlock();
         if (hintButton != null)
         {
             hintButton.gameObject.SetActive(true);
-            // 按钮文案走本地化表（预制体静态文案改为运行时表驱动）
+            // 按钮文案走本地化表（预制体静态文案由运行时表驱动）
             var hintLbl = hintButton.GetComponentInChildren<TMP_Text>();
             if (hintLbl != null) hintLbl.text = I18n.Get("tutorial.hint_button");
             hintButton.onClick.RemoveAllListeners();
@@ -232,7 +238,8 @@ public class TutorialController : MonoBehaviour
     private void EnterStep2_DoubleTap7()
     {
         SetTop(I18n.Get("tutorial.doubletap.top"));
-        SetSpotlight(7);
+        // 遮罩露出目标格7 + 已排除格10、11（连通，无需桥接）；10/11 仅展示不可点（SetAllowed 只放7）
+        SetSpotlightRegion(new HashSet<int> { 7, 10, 11 });
         PositionFinger(7);
         ShowFinger(true);
         SetBottom(I18n.Get("tutorial.doubletap.bottom"));
@@ -243,7 +250,8 @@ public class TutorialController : MonoBehaviour
     private void EnterStep3_DoubleTap1()
     {
         SetTop(I18n.Get("tutorial.doubletap.top"));
-        SetSpotlight(1);
+        // 遮罩露出目标格1 + 已排除格2、3、6（连通，无需桥接）；2/3/6 仅展示不可点（SetAllowed 只放1）
+        SetSpotlightRegion(new HashSet<int> { 1, 2, 3, 6 });
         PositionFinger(1);
         ShowFinger(true);
         SetBottom(I18n.Get("tutorial.doubletap.bottom"));
@@ -256,13 +264,14 @@ public class TutorialController : MonoBehaviour
     // 反应文案（若有）作为上方文案的过渡内容淡入替换旧文案。
     // waitForTap=true：渐出后不立即进下一步，改在 bottomText 展示「Tap anywhere to continue」，
     // 切到 Step1_TapContinue 态等任意点击（OnTapContinue）后再渐出反应文案、渐入下一步。
-    private void BeginTransition(string reaction, System.Action enter, bool waitForTap = false)
+    // delay>0：渐出后让反应文案多停留 delay 秒再进下一步（给玩家看清反应文案）。
+    private void BeginTransition(string reaction, System.Action enter, bool waitForTap = false, float delay = 0f)
     {
         if (transitionRoutine != null) StopCoroutine(transitionRoutine);
-        transitionRoutine = StartCoroutine(TransitionTo(reaction, enter, waitForTap));
+        transitionRoutine = StartCoroutine(TransitionTo(reaction, enter, waitForTap, delay));
     }
 
-    private IEnumerator TransitionTo(string reaction, System.Action enter, bool waitForTap)
+    private IEnumerator TransitionTo(string reaction, System.Action enter, bool waitForTap, float delay)
     {
         transitioning = true;
         // 渐出当前元素：上方文案（无反应时）/下方文案/手指/遮罩
@@ -277,7 +286,7 @@ public class TutorialController : MonoBehaviour
         ShowFinger(false);
         ClearSpotlight();
         yield return new WaitForSeconds(appearFadeDur); // 等渐出播完
-        transitionRoutine = null;
+        if (delay > 0f) yield return new WaitForSeconds(delay); // 反应文案多停留 delay 秒
 
         if (waitForTap)
         {
@@ -286,10 +295,21 @@ public class TutorialController : MonoBehaviour
             ShowGotItButton();
             pendingTapContinue = enter;
             step = Step.Step1_TapContinue;
+            transitionRoutine = null;
             transitioning = false;
             yield break;
         }
 
+        // 反应文案先渐出再进下一步，避免 enter.Invoke() 的 SetTop 硬切（alpha 置0）突兀。
+        // 无反应时 topText 已在开头渐出，此处跳过。等待 tap 的分支在上方已 yield break。
+        if (!string.IsNullOrEmpty(reaction))
+        {
+            TweenRunner.FadeOut(topText, appearFadeDur);
+            TweenRunner.FadeOut(topBlock, appearFadeDur);
+            yield return new WaitForSeconds(appearFadeDur);
+        }
+
+        transitionRoutine = null;
         enter.Invoke(); // 渐入下一步元素
         transitioning = false;
     }
@@ -346,11 +366,11 @@ public class TutorialController : MonoBehaviour
         if (startGameButton != null)
         {
             startGameButton.gameObject.SetActive(true);
-            // 按钮文案走本地化表（预制体静态文案改为运行时表驱动）
+            // 按钮文案走本地化表（预制体静态文案由运行时表驱动）
             var startLbl = startGameButton.GetComponentInChildren<TMP_Text>();
             if (startLbl != null) startLbl.text = I18n.Get("tutorial.start_button");
             // 与结算页 NextButton 同款动效：持续脉冲引导点击
-            TweenRunner.PulseLoop(startGameButton.transform, peak: 1.10f, halfMs: 600f);
+            TweenRunner.PulseLoop(startGameButton.transform, peak: Tuning.ButtonPulsePeak, halfMs: Tuning.ButtonPulseHalfMs);
         }
     }
 
@@ -363,6 +383,8 @@ public class TutorialController : MonoBehaviour
             startGameButton.transform.localScale = Vector3.one;
         }
         gameManager.LoadLevel(1); // 进第一关
+        // 标记教程完成（随 LoadLevel(1) 的 Persist 一同写档）：之后启动直接恢复上次关卡，不再播教程
+        SaveSystem.Data.tutorialSeen = true;
     }
 
     // ===================== 辅助 =====================
@@ -378,7 +400,7 @@ public class TutorialController : MonoBehaviour
         gotItButton.onClick.RemoveAllListeners();
         gotItButton.onClick.AddListener(OnTapContinue);
         // 与 start game 按钮同款脉冲，引导点击
-        TweenRunner.PulseLoop(gotItButton.transform, peak: 1.10f, halfMs: 600f);
+        TweenRunner.PulseLoop(gotItButton.transform, peak: Tuning.ButtonPulsePeak, halfMs: Tuning.ButtonPulseHalfMs);
     }
 
     /// <summary>隐藏「Got it!」按钮：停脉冲 + 复位缩放 + 失活，避免残留监听/动效。</summary>
@@ -566,7 +588,8 @@ public class TutorialController : MonoBehaviour
         return rt;
     }
 
-    /// <summary>按 spotlightCells 当前世界坐标刷新条带，拼出多洞（每帧调以规避布局时序）。</summary>
+    /// <summary>按 spotlightCells 当前世界坐标刷新条带，拼出多洞（每帧调以规避布局时序）。
+    /// 全程复用实例缓冲（_holes/_ys/_iv/_complement/_worldCorners），每帧零 GC。</summary>
     private void UpdateSpotlightHole()
     {
         if (spotlightRoot == null) return;
@@ -579,46 +602,52 @@ public class TutorialController : MonoBehaviour
 
         // 1) 收集所有洞矩形（局部坐标，pivot 左下 → 0..W,0..H），并钳制到遮罩范围
         float pad = spotlightPadding;
-        var holes = new List<(float x0, float y0, float x1, float y1)>();
-        Vector3[] wc = new Vector3[4];
+        _holes.Clear();
         foreach (int idx in spotlightCells)
         {
             if (idx < 0 || idx >= b.Count || b[idx] == null) continue;
-            ((RectTransform)b[idx].transform).GetWorldCorners(wc); // [0]=BL [1]=TL [2]=TR [3]=BR
-            Vector2 bl = spotlightRoot.InverseTransformPoint(wc[0]);
-            Vector2 tr = spotlightRoot.InverseTransformPoint(wc[2]);
+            ((RectTransform)b[idx].transform).GetWorldCorners(_worldCorners); // [0]=BL [1]=TL [2]=TR [3]=BR
+            Vector2 bl = spotlightRoot.InverseTransformPoint(_worldCorners[0]);
+            Vector2 tr = spotlightRoot.InverseTransformPoint(_worldCorners[2]);
             float x0 = Mathf.Clamp(bl.x - pad, 0f, W);
             float y0 = Mathf.Clamp(bl.y - pad, 0f, H);
             float x1 = Mathf.Clamp(tr.x + pad, 0f, W);
             float y1 = Mathf.Clamp(tr.y + pad, 0f, H);
-            if (x1 > x0 && y1 > y0) holes.Add((x0, y0, x1, y1));
+            if (x1 > x0 && y1 > y0) _holes.Add((x0, y0, x1, y1));
         }
-        if (holes.Count == 0) { HideAllStrips(); return; }
+        if (_holes.Count == 0) { HideAllStrips(); return; }
 
         // 2) 收集所有 y 边界（含 0、H 与每个洞的 y0/y1），去重升序
-        var ys = new List<float> { 0f, H };
-        foreach (var h in holes) { ys.Add(h.y0); ys.Add(h.y1); }
-        ys.Sort((a, c) => a.CompareTo(c));
-        // 去重
+        _ys.Clear();
+        _ys.Add(0f); _ys.Add(H);
+        foreach (var h in _holes) { _ys.Add(h.y0); _ys.Add(h.y1); }
+        _ys.Sort((a, c) => a.CompareTo(c));
+        // 原地去重
         int uniq = 1;
-        for (int i = 1; i < ys.Count; i++) { if (ys[i] - ys[uniq - 1] > 0.001f) ys[uniq++] = ys[i]; }
-        ys.RemoveRange(uniq, ys.Count - uniq);
+        for (int i = 1; i < _ys.Count; i++) { if (_ys[i] - _ys[uniq - 1] > 0.001f) _ys[uniq++] = _ys[i]; }
+        _ys.RemoveRange(uniq, _ys.Count - uniq);
 
         // 3) 逐水平带：取带中点 midY，求覆盖该带的洞 x 区间并集，其补集（在 [0,W] 内）即遮罩条带
         // 先清空所有条带：AcquireStrip 找"首个未激活"复用，若不先清空，上一帧残留的激活条带会让
         // 新分配落到池尾，被尾部停用循环误关，残留旧洞（如 Step1 居中洞在 Step2 仍可见）。
         HideAllStrips();
         int stripIdx = 0;
-        for (int i = 0; i < ys.Count - 1; i++)
+        int holeCount = _holes.Count;
+        for (int i = 0; i < _ys.Count - 1; i++)
         {
-            float y0 = ys[i], y1 = ys[i + 1];
+            float y0 = _ys[i], y1 = _ys[i + 1];
             if (y1 - y0 < 0.01f) continue;
             float midY = (y0 + y1) * 0.5f;
-            var iv = new List<(float lo, float hi)>();
-            foreach (var h in holes)
-                if (midY >= h.y0 && midY <= h.y1) iv.Add((h.x0, h.x1));
-            foreach (var seg in ComplementIntervals(iv, 0f, W))
+            _iv.Clear();
+            for (int h = 0; h < holeCount; h++)
             {
+                var hh = _holes[h];
+                if (midY >= hh.y0 && midY <= hh.y1) _iv.Add((hh.x0, hh.x1));
+            }
+            ComplementIntervals(_iv, 0f, W, _complement);
+            for (int s = 0; s < _complement.Count; s++)
+            {
+                var seg = _complement[s];
                 var rt = AcquireStrip();
                 rt.anchoredPosition = new Vector2(seg.lo, y0);
                 rt.sizeDelta = new Vector2(seg.hi - seg.lo, y1 - y0);
@@ -636,12 +665,12 @@ public class TutorialController : MonoBehaviour
         foreach (var rt in stripPool) if (rt != null && rt.gameObject.activeSelf) rt.gameObject.SetActive(false);
     }
 
-    /// <summary>区间并集在 [lo,hi] 内的补集（即需要遮罩的空白段），按 lo 升序返回。</summary>
-    private static List<(float lo, float hi)> ComplementIntervals(List<(float lo, float hi)> iv, float lo, float hi)
+    /// <summary>区间并集在 [lo,hi] 内的补集（即需要遮罩的空白段），按 lo 升序写入 res（复用缓冲，零 GC）。</summary>
+    private static void ComplementIntervals(List<(float lo, float hi)> iv, float lo, float hi, List<(float lo, float hi)> res)
     {
-        var res = new List<(float lo, float hi)>();
-        if (iv.Count == 0) { res.Add((lo, hi)); return res; }
-        // 按起点排序
+        res.Clear();
+        if (iv.Count == 0) { res.Add((lo, hi)); return; }
+        // 按起点排序（iv 为复用缓冲，排序副作用不影响调用方——调用方每带 Clear 重建）
         iv.Sort((a, b) => a.lo.CompareTo(b.lo));
         float cur = lo;
         foreach (var seg in iv)
@@ -652,7 +681,6 @@ public class TutorialController : MonoBehaviour
             if (e > cur) cur = e;
         }
         if (cur < hi) res.Add((cur, hi));
-        return res;
     }
 
     // ===================== 连通区桥接（最小补格使种子集连通）=====================

@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// 轻量协程补间工具：零外部依赖（替代 DOTween），用 Time.deltaTime 逐帧驱动。
+/// 轻量协程补间工具：零外部依赖，用 Time.deltaTime 逐帧驱动。
 /// 同一 Transform 上的新补间会自动终止该 Transform 上正在播放的旧补间，避免高频滑动时动画堆叠。
 /// 所有方法静态调用，内部由一个常驻单宿主 MonoBehaviour 承载协程。
 /// </summary>

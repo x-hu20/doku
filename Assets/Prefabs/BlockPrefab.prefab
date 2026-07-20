@@ -87,6 +87,7 @@ GameObject:
   - component: {fileID: 6247970866317396374}
   - component: {fileID: 465576993289987755}
   - component: {fileID: 3399056709759130337}
+  - component: {fileID: 4632256187094908063}
   m_Layer: 5
   m_Name: BlockPrefab
   m_TagString: Untagged
@@ -178,6 +179,21 @@ MonoBehaviour:
   hasCat: 0
   hasCross: 0
   isErrorLocked: 0
+--- !u!114 &4632256187094908063
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1662071921484274453}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e19747de3f5aca642ab2be37e372fb86, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_EffectColor: {r: 0.98039216, g: 0.36078432, b: 0.2, a: 0.5}
+  m_EffectDistance: {x: 5, y: -5}
+  m_UseGraphicAlpha: 1
 --- !u!1 &3452568323484021942
 GameObject:
   m_ObjectHideFlags: 0

@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
@@ -20,23 +21,30 @@ public class BlockController : MonoBehaviour, IPointerClickHandler, IPointerDown
     private GameManager gameManager; // 交互协调由 GameManager 统一处理
     private Image catImage;   // 缓存：避免每次显隐 GetComponent；Awake 时一次性获取
     private Image crossImage;
-    private Outline errorOutline; // 错误红框（Outline 特效，挂在 bgImage 上，错误时启用并保留至关卡结束）
+    private Color crossOriginalColor; // 叉号原始颜色（错误反馈染红后，Setup 复位防对象池串色）
+    private Outline errorOutline; // 错误红框（Outline 特效，挂在 bgImage 上，错误反馈期间临时启用）
+    private Coroutine errorFeedbackRoutine; // 红框消失+叉号染红的延迟协程（Setup 时停掉，防重开关卡残留串色）
+
+    // 红框持续时长 = 抖动时长（Tuning.ErrorShakeDuration），抖动结束即关红框、叉号染红
+    private const float ErrorFeedbackDuration = Tuning.ErrorShakeDuration;
 
     private void Awake()
     {
         // cat/cross 在预制体中作为 GameObject 引用绑定，此处一次性取其 Image 组件用于 enabled 控制
         catImage = cat != null ? cat.GetComponent<Image>() : null;
         crossImage = cross != null ? cross.GetComponent<Image>() : null;
+        if (crossImage != null) crossOriginalColor = crossImage.color;
         EnsureErrorOutline();
     }
 
-    // 错误红框：复用 bgImage 上的 Outline 特效作边框，初始禁用；Setup 时复位
+    // 错误红框：复用 bgImage 上的 Outline 特效作边框，初始禁用；Setup 时复位。
+    // 优先 GetComponent 复用预制体上已挂的 Outline；缺失才运行时 AddComponent 兜底（池复用后仅首次实例化触发）。
     private void EnsureErrorOutline()
     {
         if (bgImage == null) return;
         errorOutline = bgImage.GetComponent<Outline>();
         if (errorOutline == null) errorOutline = bgImage.gameObject.AddComponent<Outline>();
-        errorOutline.effectColor = new Color(1f, 0.12f, 0.12f, 1f);
+        errorOutline.effectColor = Tuning.ErrorColor;
         errorOutline.effectDistance = new Vector2(5f, -5f);
         errorOutline.enabled = false;
     }
@@ -50,6 +58,8 @@ public class BlockController : MonoBehaviour, IPointerClickHandler, IPointerDown
         hasCross = false;
         isErrorLocked = false;
         if (errorOutline != null) errorOutline.enabled = false;
+        if (crossImage != null) crossImage.color = crossOriginalColor; // 复位叉号颜色（上一关可能染红）
+        if (errorFeedbackRoutine != null) { StopCoroutine(errorFeedbackRoutine); errorFeedbackRoutine = null; } // 停残留协程
 
         row = r;
         col = c;
@@ -91,7 +101,7 @@ public class BlockController : MonoBehaviour, IPointerClickHandler, IPointerDown
     /// <summary>横向正弦衰减抖动（双击点错时调）</summary>
     public void PlayErrorShake()
     {
-        TweenRunner.ShakeHorizontal(transform, 14f, 0.4f);
+        TweenRunner.ShakeHorizontal(transform, Tuning.ErrorShakeAmplitude, Tuning.ErrorShakeDuration);
     }
 
     /// <summary>两下柔和横向抖动（提示道具取消 cross 后引导双击该格）</summary>
@@ -100,11 +110,29 @@ public class BlockController : MonoBehaviour, IPointerClickHandler, IPointerDown
         TweenRunner.DoubleShake(transform);
     }
 
-    /// <summary>边框染红 + 本关锁定（不再响应点击），保留至关卡结束</summary>
+    /// <summary>本关锁定（不再响应点击）。视觉反馈由 <see cref="PlayErrorFeedback"/> 单独驱动。</summary>
     public void LockAsError()
     {
         isErrorLocked = true;
-        if (errorOutline != null) errorOutline.enabled = true;
+    }
+
+    /// <summary>双击点错的完整视觉反馈：红框出现 + 横向抖动，抖动结束后红框消失、叉号染红（保留至本关结束）。
+    /// 红框仅抖动期间可见，错误格的持久标识为红色叉号。锁定状态由 LockAsError 置位。</summary>
+    public void PlayErrorFeedback()
+    {
+        if (errorOutline != null) errorOutline.enabled = true; // 红框出现
+        PlayErrorShake();                                      // 横向正弦衰减抖动
+        if (errorFeedbackRoutine != null) StopCoroutine(errorFeedbackRoutine);
+        errorFeedbackRoutine = StartCoroutine(HideErrorFrameAfter(ErrorFeedbackDuration));
+    }
+
+    /// <summary>抖动结束后：红框消失 + 叉号染红（红色叉号作为错误格的持久标识，保留至 Setup 复位）。</summary>
+    private IEnumerator HideErrorFrameAfter(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        errorFeedbackRoutine = null;
+        if (errorOutline != null) errorOutline.enabled = false; // 红框消失
+        if (crossImage != null) crossImage.color = Tuning.ErrorColor; // 叉号染红（与红框同色）
     }
 
     // ====== 指针事件：全部转发给 GameManager 统一协调单击/双击/滑动 ======

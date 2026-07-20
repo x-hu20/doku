@@ -7,7 +7,7 @@ public static class LevelTableLoader
 {
     /// <summary>
     /// 一行 CSV 解析后的中间产物：既含回写 CSV 所需的原始子串（prefix/mapStr/givenStr/solutionStr），
-    /// 也含解析后的强类型字段（gridSize/map/given/solutionData）。供运行时 BuildLevel 与
+    /// 也含解析后的强类型字段（gridSize/map/given/solutions）。供运行时 BuildLevel 与
     /// Editor 烘焙器（LevelSolutionBaker）共享同一份解析逻辑，杜绝两处副本漂移。
     /// </summary>
     public struct ParsedLine
@@ -15,11 +15,11 @@ public static class LevelTableLoader
         public string prefix;          // "level,gridSize" 前缀（用于回写）
         public string mapStr;          // map 列原始数字串（引号内）
         public string givenStr;        // given 列原始数字串（引号内，可空）
-        public string solutionStr;     // solution 列原始数字串（引号内，可空=未烘焙）
+        public string solutionStr;     // solution 列原始数字串（引号内，可空=未烘焙；多解以 ';' 分隔）
         public int gridSize;
         public int[] map;              // 解析后的 map（长度 gridSize*gridSize）
         public int[] givenCats;        // 解析后的 given 一维索引（无则空数组）
-        public bool[] solutionData;     // 解析后的 solution（null=未烘焙）
+        public List<bool[]> solutions; // 解析后的全部 solution（null=未烘焙，运行时回退解算）
     }
 
     /// <summary>
@@ -110,9 +110,9 @@ public static class LevelTableLoader
         int[] givenCats = ParseGivenCats(givenString, expected, levelOrdinal);
         if (givenCats == null) return false; // 校验失败（错误已打印）
 
-        // 4. 解析 solution（空串 → null=未烘焙；非空但非法 → null 且视失败）
-        bool[] solutionData = ParseSolution(solutionString, expected, levelOrdinal);
-        if (solutionData == null && !string.IsNullOrWhiteSpace(solutionString)) return false;
+        // 4. 解析 solution（空串 → null=未烘焙；非空但非法 → null 且视失败）。多解以 ';' 分隔。
+        List<bool[]> solutions = ParseSolutions(solutionString, expected, levelOrdinal);
+        if (solutions == null && !string.IsNullOrWhiteSpace(solutionString)) return false;
 
         result = new ParsedLine
         {
@@ -123,7 +123,7 @@ public static class LevelTableLoader
             gridSize = gridSize,
             map = map,
             givenCats = givenCats,
-            solutionData = solutionData
+            solutions = solutions
         };
         return true;
     }
@@ -209,37 +209,47 @@ public static class LevelTableLoader
             gridSize = p.gridSize,
             mapData = p.map,
             givenCats = p.givenCats,
-            solutionData = p.solutionData
+            solutions = p.solutions
         };
     }
 
-    // 解析 solution 列字符串为 bool[] 正解数组，并做合法性校验。
-    // totalCells = gridSize * gridSize。空串 → 返回 null（表示未烘焙，运行时回退解算）。
-    // 非空但校验失败 → 返回 null 并打印错误（调用方据 solutionString 非空判定为失败而跳过该关）。
-    static bool[] ParseSolution(string solutionString, int totalCells, int levelOrdinal)
+    // 解析 solution 列字符串为全部正解 List<bool[]>，并做合法性校验。
+    // 多解以 ';' 分隔，每个解是逗号分隔的 0/1 串；单解无 ';'（向后兼容旧的单解烘焙格式）。
+    // totalCells = gridSize * gridSize。空串 → 返回 null（未烘焙，运行时回退解算）。
+    // 非空但任一解校验失败 → 返回 null 并打印错误（调用方据 solutionString 非空判定为失败而跳过该关）。
+    static List<bool[]> ParseSolutions(string solutionString, int totalCells, int levelOrdinal)
     {
         if (string.IsNullOrWhiteSpace(solutionString))
         {
             return null; // 未烘焙：返回 null，调用方据此在运行时回退解算
         }
 
-        string[] tokens = solutionString.Split(new char[] { ',' }, System.StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length != totalCells)
-        {
-            Debug.LogError($"[LevelTableLoader] 第 {levelOrdinal + 1} 关 solution 数据数量({tokens.Length})与 gridSize*gridSize({totalCells})不一致，已跳过该关。");
-            return null;
-        }
+        // 多解以 ';' 分隔；单解（无 ';')得到 1 个 part，向后兼容
+        string[] solParts = solutionString.Split(new char[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries);
+        if (solParts.Length == 0) return null;
 
-        var result = new bool[totalCells];
-        for (int i = 0; i < totalCells; i++)
+        var result = new List<bool[]>(solParts.Length);
+        for (int si = 0; si < solParts.Length; si++)
         {
-            string t = tokens[i].Trim();
-            if (t != "0" && t != "1")
+            string[] tokens = solParts[si].Split(new char[] { ',' }, System.StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length != totalCells)
             {
-                Debug.LogError($"[LevelTableLoader] 第 {levelOrdinal + 1} 关 solution 第 {i + 1} 个元素 \"{tokens[i]}\" 不是合法的 0/1，已跳过该关。");
+                Debug.LogError($"[LevelTableLoader] 第 {levelOrdinal + 1} 关 solution 第 {si + 1} 解数据数量({tokens.Length})与 gridSize*gridSize({totalCells})不一致，已跳过该关。");
                 return null;
             }
-            result[i] = t == "1";
+
+            var sol = new bool[totalCells];
+            for (int i = 0; i < totalCells; i++)
+            {
+                string t = tokens[i].Trim();
+                if (t != "0" && t != "1")
+                {
+                    Debug.LogError($"[LevelTableLoader] 第 {levelOrdinal + 1} 关 solution 第 {si + 1} 解第 {i + 1} 个元素 \"{tokens[i]}\" 不是合法的 0/1，已跳过该关。");
+                    return null;
+                }
+                sol[i] = t == "1";
+            }
+            result.Add(sol);
         }
         return result;
     }

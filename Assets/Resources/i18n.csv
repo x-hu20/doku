@@ -22,6 +22,9 @@ game.level,Level {0}
 game.level_completed,Level {0} completed!
 game.level_completed_title,Level {0} Completed!
 game.progress,Progress: {0} / {1}
+rule.color,1 Cat per color
+rule.rowcol,1 Cat per column and row
+rule.no_touch,Cat cannot touch
 modal.level_failed.title,Level Failed
 modal.level_failed.revive,3 more lives
 modal.level_failed.restart,restart
