@@ -2,13 +2,10 @@ key,en
 tutorial.step1.top,Double-tap here to drop your first cat.
 tutorial.step1.reaction,One cat per color. Good job!
 tutorial.got_it,Got it!
-tutorial.step2.top,No two cats in the same row or column.
-tutorial.step2.bottom,Tap empty cells to exclude wrong spots.
-tutorial.step3.top,Social distancing!\nCats can't be adjacent to each other.
-tutorial.step3.bottom,Swipe across cells to exclude them all at once!
+tutorial.step2.top,No two cats in the same row or column.\nTap empty cells to exclude wrong spots.
+tutorial.step3.top,Cats can't be adjacent to each other.\nSwipe across cells to exclude them all at once!
 tutorial.step4.top,Where's the last cat? Hunt it down!
-tutorial.doubletap.top,Only one cell left this color
-tutorial.doubletap.bottom,Double-tap to claim it!
+tutorial.doubletap.top,Only one cell left this color\nDouble-tap to claim it!
 tutorial.reaction.perfect,Perfect!
 tutorial.reaction.amazing,Amazing!
 tutorial.hint_button,Stuck? Tap here for a quick hint
@@ -28,3 +25,13 @@ rule.no_touch,Cat cannot touch
 modal.level_failed.title,Level Failed
 modal.level_failed.revive,3 more lives
 modal.level_failed.restart,restart
+slogan.1,"Keep your mind sharp, today and every day."
+slogan.2,Smart moves for a sharper mind.
+slogan.3,"Train your brain, one grid at a time."
+slogan.4,Your daily logic ritual starts here.
+slogan.5,Pure logic. Infinite satisfaction.
+slogan.6,"Master the grid, master your day."
+slogan.7,Welcome back! Ready for a quick puzzle?
+slogan.8,Good to see you! Let's solve together.
+slogan.9,A quick brain workout!
+welcome.guest_prefix,Guest

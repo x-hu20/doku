@@ -58,6 +58,8 @@ public class GameManager : MonoBehaviour
     [SerializeField] private Button tipButton;
     [Tooltip("新手引导关控制器（挂场景中，level 0 时启用）")]
     [SerializeField] private TutorialController tutorialController;
+    [Tooltip("欢迎页控制器（启动时显示 slogan+加载进度条+游客ID，完成后进关卡）")]
+    [SerializeField] private WelcomeController welcomeController;
 
     [Header("道具数量与红点（Inspector 拖拽）")]
     [Tooltip("每关初始道具数量（魔法棒与提示各自独立计数）")]
@@ -172,6 +174,7 @@ public class GameManager : MonoBehaviour
 
         // 道具数量/红点/宝箱/广告门控容器：从存档恢复（首次玩家用 initialItemCount 种子，教程完成前视为首次）
         SaveSystem.Load();
+        SaveSystem.EnsurePlayerId(); // 首次生成游客ID（GUID）并写档，欢迎页展示用
         bool fresh = !SaveSystem.Data.tutorialSeen;
         int mwCount = fresh ? initialItemCount : SaveSystem.Data.magicWandCount;
         int tipCnt = fresh ? initialItemCount : SaveSystem.Data.tipCount;
@@ -181,8 +184,21 @@ public class GameManager : MonoBehaviour
         inventory.OnChanged += Persist; // 道具扣减/广告+1/宝箱进度变更触发写档
         currentLevelIndex = fresh ? 0 : Mathf.Clamp(SaveSystem.Data.currentLevel, 0, loadedLevels.Count - 1);
 
-        // 加载起始关卡：首次走 level 0 教程，否则恢复上次关卡
+        // 欢迎页（slogan+加载进度条+游客ID）覆盖显示，完成后进起始关卡（首次教程 / 老玩家上次关）
+        if (welcomeController != null)
+        {
+            welcomeController.MarkReady(); // 同步初始化已完成（未来 SDK 异步加载时改在此前置位）
+            welcomeController.Show(OnWelcomeComplete);
+        }
+        else LoadLevel(currentLevelIndex); // 无欢迎页兜底直进
+    }
+
+    /// <summary>欢迎页播放完毕回调：先启动关卡加载（协程），再渐出欢迎页——棋盘在 welcome 之下生成，
+    /// 渐出期间 sortingOrder 仍为 2000 盖住棋盘生成过程，避免白屏。</summary>
+    private void OnWelcomeComplete()
+    {
         LoadLevel(currentLevelIndex);
+        if (welcomeController != null) welcomeController.Hide();
     }
 
     /// <summary>把 live 状态写回存档并保存。resumeLevel 为"下次启动应恢复的关卡"：

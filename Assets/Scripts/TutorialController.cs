@@ -46,6 +46,20 @@ public class TutorialController : MonoBehaviour
     [Tooltip("文案/色块/遮罩/手指 渐入渐出时长（秒）：引导元素缓慢淡入淡出，避免瞬切突兀")]
     [SerializeField] private float appearFadeDur = 0.3f;
 
+    [Header("手指引导扩展")]
+    [Tooltip("按压水波纹颜色（RGB；alpha 由扩散动画驱动，初始 0）")]
+    [SerializeField] private Color rippleColor = new Color(1f, 1f, 1f, 0.6f);
+    [Tooltip("按压水波纹节点边长（像素，略小于格）")]
+    [SerializeField] private float rippleSize = 110f;
+    [Tooltip("Step3 滑动方向箭头 Sprite（arrow_image.png，原方向向上）")]
+    [SerializeField] private Sprite arrowSprite;
+    [Tooltip("Step3 滑动方向箭头颜色（半透明白）")]
+    [SerializeField] private Color arrowColor = new Color(1f, 1f, 1f, 0.7f);
+    [Tooltip("Step3 滑动方向箭头显示尺寸（像素，长粗箭头）")]
+    [SerializeField] private float arrowSize = 140f;
+    [Tooltip("Step3 箭头相对手指延迟启动的时长（毫秒）——箭头晚于此时间划过同一路径，作拖尾")]
+    [SerializeField] private float arrowDelayMs = 500f;
+
     private GameManager gameManager;
     private List<BlockController> Blocks => gameManager != null ? gameManager.AllBlocks : null;
 
@@ -86,6 +100,17 @@ public class TutorialController : MonoBehaviour
     private Coroutine transitionRoutine;
     // Step1_TapContinue 态：点击任意位置后才渐入下一步，pendingTapContinue 持待执行的 enter 回调
     private System.Action pendingTapContinue;
+
+    // ===================== 手指引导扩展：水波纹 / 方向箭头 / Step2 逐格 / Step3 滑动 =====================
+    private RectTransform rippleNode;        // 按压水波纹节点（RoundedImage 圆形，挂当前引导格下）
+    private Graphic rippleGraphic;           // rippleNode 的 Graphic 缓存（RipplePunch 用）
+    private RectTransform arrowNode;         // Step3 滑动方向箭头（TMP_Text "→"，挂手指下随手指移动）
+    private int fingerFollowCell = -1;       // 双击步骤：手指每帧跟随的目标格索引（-1 不跟随）。规避格子生成当帧布局未结算的位置错位
+    private readonly int[] step2Sequence = { 0, 4, 12, 9, 10, 11 }; // Step2 单击引导顺序
+    private int step2FingerIdx;              // 当前手指指向的序列位置
+    private bool step2FingerActive;          // Step2 单击引导是否进行中
+    private Coroutine step2MoveRoutine;      // 手指逐格平滑移动协程（操作 finger.position，与单击缩放循环互不干扰）
+    private readonly int[] step3SwipePath = { 3, 2, 6 }; // Step3 滑动轨迹顺序（L 形相邻路径）
 
     /// <summary>当前允许点击的格子集合（引导关点击拦截用）。</summary>
     public bool IsCellAllowed(BlockController block)
@@ -149,6 +174,9 @@ public class TutorialController : MonoBehaviour
         if (gameManager == null || step == Step.Done || transitioning) return;
         // 棋盘布局可能在格子生成当帧尚未结算，每帧按目标格当前世界坐标刷新开洞，规避布局时序
         if (spotlightCells.Count > 0) UpdateSpotlightHole();
+        // 双击步骤手指同样每帧跟随目标格（Step1 紧跟格子生成当帧进入，布局未结算会定位到画面中央）
+        if (fingerFollowCell >= 0 && finger != null && finger.gameObject.activeSelf)
+            finger.transform.position = BlockWorldCenter(fingerFollowCell);
         var blocks = Blocks;
         if (blocks == null) return;
 
@@ -161,6 +189,7 @@ public class TutorialController : MonoBehaviour
                 // 由「Got it!」按钮 onClick 驱动 OnTapContinue，此处无需轮询输入
                 break;
             case Step.Step2_ExcludeColor2:
+                UpdateStep2Finger(); // 当前引导格已叉 → 推进到序列下一未叉格
                 if (AllCrossed(0, 4, 9, 10, 11, 12)) BeginTransition(null, EnterStep2_DoubleTap7);
                 break;
             case Step.Step2_WaitDoubleTap7:
@@ -195,10 +224,10 @@ public class TutorialController : MonoBehaviour
         // 色2 排除阶段：0,4,9,10,11,12 可点（打叉）= 放猫8 的行+列去8，本身三段不连通
         // 遮罩露该排除格集 + 最少桥接（补格8 → 十字），整片连通聚焦
         SetTop(I18n.Get("tutorial.step2.top"));
-        SetBottom(I18n.Get("tutorial.step2.bottom"));
         ShowFinger(false);
         SetSpotlightRegion(new HashSet<int> { 0, 4, 9, 10, 11, 12 });
         SetAllowedExcludeOnly(0, 4, 9, 10, 11, 12);
+        StartStep2Finger(); // 手指逐格单击引导（含每格水波纹），用户叉当前格→推进到序列下一未叉格
         step = Step.Step2_ExcludeColor2;
     }
 
@@ -206,10 +235,10 @@ public class TutorialController : MonoBehaviour
     {
         // 色1 排除阶段：2,3,6 可点，本身已连通（L 形），无需补桥
         SetTop(I18n.Get("tutorial.step3.top"));
-        SetBottom(I18n.Get("tutorial.step3.bottom"));
         ShowFinger(false);
         SetSpotlightRegion(new HashSet<int> { 2, 3, 6 });
         SetAllowedExcludeOnly(2, 3, 6);
+        StartStep3Swipe(); // 手指沿 3→2→6 滑动轨迹循环 + 方向箭头，演示一次滑动跨越
         step = Step.Step3_ExcludeColor1;
     }
 
@@ -240,9 +269,9 @@ public class TutorialController : MonoBehaviour
         SetTop(I18n.Get("tutorial.doubletap.top"));
         // 遮罩露出目标格7 + 已排除格10、11（连通，无需桥接）；10/11 仅展示不可点（SetAllowed 只放7）
         SetSpotlightRegion(new HashSet<int> { 7, 10, 11 });
+        HideArrow(); // 双击步骤无方向箭头（Step3 滑动遗留）
         PositionFinger(7);
         ShowFinger(true);
-        SetBottom(I18n.Get("tutorial.doubletap.bottom"));
         SetAllowed(7);
         step = Step.Step2_WaitDoubleTap7;
     }
@@ -252,9 +281,9 @@ public class TutorialController : MonoBehaviour
         SetTop(I18n.Get("tutorial.doubletap.top"));
         // 遮罩露出目标格1 + 已排除格2、3、6（连通，无需桥接）；2/3/6 仅展示不可点（SetAllowed 只放1）
         SetSpotlightRegion(new HashSet<int> { 1, 2, 3, 6 });
+        HideArrow();
         PositionFinger(1);
         ShowFinger(true);
-        SetBottom(I18n.Get("tutorial.doubletap.bottom"));
         SetAllowed(1);
         step = Step.Step3_WaitDoubleTap1;
     }
@@ -469,20 +498,44 @@ public class TutorialController : MonoBehaviour
     {
         if (finger == null) return;
         if (on) { finger.gameObject.SetActive(true); TweenRunner.FadeIn(finger, appearFadeDur, false); }
-        else { TweenRunner.FadeOut(finger, appearFadeDur, false); TweenRunner.Stop(finger.transform); }
+        else
+        {
+            TweenRunner.FadeOut(finger, appearFadeDur, false);
+            TweenRunner.Stop(finger.transform);
+            if (step2MoveRoutine != null) { StopCoroutine(step2MoveRoutine); step2MoveRoutine = null; }
+            fingerFollowCell = -1; // 停止每帧跟随
+            HideRipple();
+            HideArrow();
+        }
     }
 
-    /// <summary>手指定位到目标格正中心（挂格子下、anchoredPosition=zero，依赖手指 pivot=中心、格子 pivot=中心）。
-    /// 层级：手指带独立 Canvas（overrideSorting, sortingOrder=1000），即便作为格子子节点也渲染在遮罩/文案之上。</summary>
+    /// <summary>双击引导入口：手指瞬移到目标格中心 + 挂水波纹 + 启动双击循环（每次按下触发该格水波纹）。
+    /// 手指留 TutorialUI 下用世界坐标定位（不 SetParent 到格子），便于在格子间平滑移动。
+    /// 手指 pivot(0.5,0.8) 指尖对齐格子中心；独立 Canvas（overrideSorting=1000）渲染在遮罩/文案之上。</summary>
     private void PositionFinger(int idx)
+    {
+        PositionFingerAtCell(idx);
+        AttachRippleToCell(idx);
+        fingerFollowCell = idx; // 双击步骤：手指每帧跟随目标格，规避格子生成当帧布局未结算的位置错位
+        TweenRunner.FingerDoubleTapLoop(finger.transform, onPress: () => TweenRunner.RipplePunch(rippleGraphic));
+    }
+
+    /// <summary>手指瞬移到目标格世界中心（不做平滑，供双击/滑动步骤起手定位）。</summary>
+    private void PositionFingerAtCell(int idx)
     {
         var b = Blocks;
         if (finger == null || idx < 0 || idx >= b.Count || b[idx] == null) return;
-        finger.transform.SetParent(b[idx].transform, false);
         finger.transform.localScale = Vector3.one;
-        finger.rectTransform.anchoredPosition = Vector2.zero; // 居中（格子 pivot 中心 + 手指 pivot 中心）
+        finger.transform.position = BlockWorldCenter(idx);
         EnsureFingerCanvas();
-        TweenRunner.FingerDoubleTapLoop(finger.transform);
+    }
+
+    /// <summary>目标格 RectTransform 世界中心（Screen Space Overlay Canvas 下即屏幕像素坐标，跨 Canvas 一致）。</summary>
+    private Vector3 BlockWorldCenter(int idx)
+    {
+        var b = Blocks;
+        if (idx < 0 || idx >= b.Count || b[idx] == null) return Vector3.zero;
+        return ((RectTransform)b[idx].transform).position;
     }
 
     /// <summary>给手指挂独立 Canvas 并 overrideSorting，使其渲染在最上层（高于遮罩/文案所在 Canvas）。
@@ -495,6 +548,173 @@ public class TutorialController : MonoBehaviour
         if (fingerCanvas == null) return; // 仍为 null 则放弃，避免崩溃
         fingerCanvas.overrideSorting = true;
         fingerCanvas.sortingOrder = 1000;
+    }
+
+    // ===================== 水波纹节点（双击/单击引导格子上的按压反馈）=====================
+    // 懒创建一个 RoundedImage 圆形节点（纯色，alpha 由 RipplePunch 驱动，初始 0）。
+    // 挂到当前引导格子下（聚光灯开洞内可见，渲染在格子背景之上）；步骤切换/清理时隐藏。
+    private void EnsureRippleNode()
+    {
+        if (rippleNode != null) return;
+        var go = new GameObject("TutorialRipple", typeof(RectTransform), typeof(CanvasRenderer));
+        go.transform.SetParent(finger != null ? finger.transform.parent : transform.parent, false);
+        rippleNode = (RectTransform)go.transform;
+        rippleNode.anchorMin = new Vector2(0.5f, 0.5f);
+        rippleNode.anchorMax = new Vector2(0.5f, 0.5f);
+        rippleNode.pivot = new Vector2(0.5f, 0.5f);
+        rippleNode.anchoredPosition = Vector2.zero;
+        rippleNode.sizeDelta = new Vector2(rippleSize, rippleSize);
+        var img = go.AddComponent<RoundedImage>();
+        img.color = new Color(rippleColor.r, rippleColor.g, rippleColor.b, 0f);
+        img.raycastTarget = false;
+        img.CornerRadius = rippleSize * 0.5f; // 圆形
+        rippleGraphic = img;
+        go.SetActive(false);
+    }
+
+    /// <summary>把水波纹节点挂到目标格子下并复位 alpha（双击步骤起手 / Step2 推进到新格时调）。</summary>
+    private void AttachRippleToCell(int idx)
+    {
+        EnsureRippleNode();
+        var b = Blocks;
+        if (rippleNode == null || idx < 0 || idx >= b.Count || b[idx] == null) return;
+        rippleNode.SetParent(b[idx].transform, false);
+        rippleNode.localScale = Vector3.one;
+        rippleNode.anchoredPosition = Vector2.zero;
+        rippleNode.sizeDelta = new Vector2(rippleSize, rippleSize);
+        if (rippleGraphic != null) { var c = rippleGraphic.color; c.a = 0f; rippleGraphic.color = c; } // 复位 alpha，待下次按下扩散
+        rippleNode.gameObject.SetActive(true);
+    }
+
+    private void HideRipple()
+    {
+        if (rippleNode != null && rippleNode.gameObject.activeSelf) rippleNode.gameObject.SetActive(false);
+    }
+
+    // ===================== 方向箭头（Step3 滑动方向指示）=====================
+    // 懒创建 Image（arrow_image.png，原方向向上）独立挂 TutorialUI 下（非手指子节点），
+    // 带独立 Canvas（overrideSorting=999，渲染在遮罩之上、手指 1000 之下）。
+    // 箭头独立沿手指同路径运动，整体延迟 0.5s 启动，作拖尾划过效果（ArrowSwipeLoop）。
+    private Canvas arrowCanvas;
+    private void EnsureArrowNode()
+    {
+        if (arrowNode != null) return;
+        var go = new GameObject("TutorialArrow", typeof(RectTransform), typeof(CanvasRenderer));
+        // 挂 finger 同父（TutorialUI），独立世界坐标定位，不受手指移动影响
+        go.transform.SetParent(finger != null ? finger.transform.parent : transform, false);
+        arrowNode = (RectTransform)go.transform;
+        arrowNode.anchorMin = new Vector2(0.5f, 0.5f);
+        arrowNode.anchorMax = new Vector2(0.5f, 0.5f);
+        arrowNode.pivot = new Vector2(0.5f, 0.5f);
+        arrowNode.anchoredPosition = Vector2.zero;
+        arrowNode.sizeDelta = new Vector2(arrowSize, arrowSize);
+        var img = go.AddComponent<Image>();
+        img.sprite = arrowSprite;
+        img.color = arrowColor;
+        img.raycastTarget = false;
+        EnsureArrowCanvas();
+        go.SetActive(false);
+    }
+
+    /// <summary>给箭头挂独立 Canvas 并 overrideSorting（sortingOrder=999，低于手指 1000），使其渲染在遮罩之上、手指之下。</summary>
+    private void EnsureArrowCanvas()
+    {
+        if (arrowNode == null) return;
+        if (arrowCanvas == null) arrowCanvas = arrowNode.GetComponent<Canvas>();
+        if (arrowCanvas == null) arrowCanvas = arrowNode.gameObject.AddComponent<Canvas>();
+        if (arrowCanvas == null) return;
+        arrowCanvas.overrideSorting = true;
+        arrowCanvas.sortingOrder = 999;
+    }
+
+    private void HideArrow()
+    {
+        if (arrowNode == null) return;
+        TweenRunner.Stop(arrowNode.transform); // 停箭头独立滑动协程
+        arrowNode.transform.localScale = Vector3.one;
+        arrowNode.transform.localRotation = Quaternion.identity;
+        if (arrowNode.gameObject.activeSelf) arrowNode.gameObject.SetActive(false);
+    }
+
+    // ===================== Step2 单击逐格引导 =====================
+    // 手指按序列 0→4→12→9→10→11 逐格单击循环；用户叉掉当前格 → 平滑移到序列下一个未叉格（已叉的跳过）。
+    // 位置移动用独立协程（操作 finger.position，与单击缩放循环 localScale 互不干扰，不走 TweenRunner 互斥注册）。
+    private void StartStep2Finger()
+    {
+        step2FingerIdx = 0;
+        step2FingerActive = false; // Advance 内据此判断起手瞬移（避免从远处滑入）
+        ShowFinger(true);
+        AdvanceStep2Finger(startLoop: true); // 定位到第一个未叉格 + 启动单击循环
+    }
+
+    /// <summary>从 step2FingerIdx 起找第一个未叉格：找到则挂波纹 + 定位/移动 + (起手)启动单击循环；全叉则收起手指。</summary>
+    /// <param name="startLoop">true=起手：瞬移 + 启动单击缩放循环（弹入一次）；false=推进：仅平滑移动 + 挂波纹，不重启循环。</param>
+    private void AdvanceStep2Finger(bool startLoop)
+    {
+        var b = Blocks;
+        for (int i = step2FingerIdx; i < step2Sequence.Length; i++)
+        {
+            int idx = step2Sequence[i];
+            if (idx >= 0 && idx < b.Count && b[idx] != null && !b[idx].hasCross)
+            {
+                step2FingerIdx = i;
+                step2FingerActive = true;
+                AttachRippleToCell(idx);
+                if (step2MoveRoutine != null) StopCoroutine(step2MoveRoutine);
+                if (startLoop) PositionFingerAtCell(idx);
+                else step2MoveRoutine = StartCoroutine(MoveFingerToCell(idx));
+                if (startLoop) TweenRunner.FingerSingleTapLoop(finger.transform, onPress: () => TweenRunner.RipplePunch(rippleGraphic));
+                return;
+            }
+        }
+        // 序列全叉：收起手指，交给 Update 的 AllCrossed → 过渡进双击7
+        step2FingerActive = false;
+        ShowFinger(false);
+    }
+
+    /// <summary>Update 调：当前引导格已叉则推进到下一个未叉格。</summary>
+    private void UpdateStep2Finger()
+    {
+        if (!step2FingerActive) return;
+        var b = Blocks;
+        int cur = step2FingerIdx < step2Sequence.Length ? step2Sequence[step2FingerIdx] : -1;
+        if (cur >= 0 && cur < b.Count && b[cur] != null && b[cur].hasCross)
+        {
+            step2FingerIdx++;
+            AdvanceStep2Finger(startLoop: false);
+        }
+    }
+
+    private IEnumerator MoveFingerToCell(int idx)
+    {
+        Vector3 target = BlockWorldCenter(idx);
+        Vector3 from = finger.transform.position;
+        const float dur = 0.22f;
+        float e = 0f;
+        while (e < dur)
+        {
+            e += Time.deltaTime;
+            float k = Mathf.Clamp01(e / dur);
+            float ek = 1f - (1f - k) * (1f - k); // EaseOutQuad
+            finger.transform.position = Vector3.Lerp(from, target, ek);
+            yield return null;
+        }
+        finger.transform.position = target;
+        step2MoveRoutine = null;
+    }
+
+    // ===================== Step3 滑动轨迹循环 + 方向箭头（独立拖尾）=====================
+    private void StartStep3Swipe()
+    {
+        Vector3[] anchors = new Vector3[step3SwipePath.Length];
+        for (int i = 0; i < step3SwipePath.Length; i++) anchors[i] = BlockWorldCenter(step3SwipePath[i]);
+        PositionFingerAtCell(step3SwipePath[0]);
+        EnsureArrowNode();
+        if (arrowNode != null) arrowNode.gameObject.SetActive(true);
+        ShowFinger(true);
+        // 手指先行，箭头独立沿同路径延迟 0.5s 后划过（拖尾效果）；两者各自 RunExclusive 互不干扰
+        TweenRunner.FingerSwipeLoop(finger.transform, anchors);
+        if (arrowNode != null) TweenRunner.ArrowSwipeLoop(arrowNode.transform, anchors, delayMs: arrowDelayMs);
     }
 
     // ===================== 聚光灯遮罩 =====================

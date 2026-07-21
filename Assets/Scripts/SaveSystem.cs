@@ -18,6 +18,8 @@ public class SaveData
     public int tipCount = 0;           // 提示道具余量
     public int levelsSinceChest = 0;   // 自上次开箱后通关数（宝箱周期）
     public bool tutorialSeen = false;  // 是否已完成 level 0 教程
+    public string playerId = "";       // 本地游客ID（GUID），首次启动生成，终身不变（除非清档）
+    public string accountId = "";      // 预留：未来 SDK 登录的账号ID，游客态留空
 }
 
 public static class SaveSystem
@@ -84,5 +86,16 @@ public static class SaveSystem
             if (File.Exists(tmp)) File.Delete(tmp);
         }
         catch (Exception e) { Debug.LogWarning($"[SaveSystem] 存档删除失败：{e.Message}"); }
+    }
+
+    /// <summary>确保玩家拥有本地游客ID：缺失则生成 GUID 并写档。GameManager 启动 Load 后调用。
+    /// 纯本地身份，跨设备/清档不保留；accountId 留空待未来 SDK 登录填充。</summary>
+    public static void EnsurePlayerId()
+    {
+        if (string.IsNullOrEmpty(Data.playerId))
+        {
+            Data.playerId = System.Guid.NewGuid().ToString();
+            Save();
+        }
     }
 }

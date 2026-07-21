@@ -132,12 +132,16 @@ public static class TweenRunner
     /// <param name="tapMs">单次点击时长（毫秒）</param>
     /// <param name="gapMs">双击与双击之间的间隔（毫秒），拉大避免像连续点击</param>
     public static void FingerDoubleTapLoop(Transform t, float pressScale = 0.85f, float tapMs = 120f, float gapMs = 975f)
+        => FingerDoubleTapLoop(t, null, pressScale, tapMs, gapMs);
+
+    /// <param name="onPress">每次按下到底时回调（引导关触发目标格水波纹）。null 无副作用。</param>
+    public static void FingerDoubleTapLoop(Transform t, System.Action onPress, float pressScale = 0.85f, float tapMs = 120f, float gapMs = 975f)
     {
         if (t == null) return;
-        RunExclusive(t, FingerDoubleTapRoutine(t, pressScale, tapMs / 1000f, gapMs / 1000f));
+        RunExclusive(t, FingerDoubleTapRoutine(t, onPress, pressScale, tapMs / 1000f, gapMs / 1000f));
     }
 
-    private static IEnumerator FingerDoubleTapRoutine(Transform t, float press, float tapSec, float gapSec)
+    private static IEnumerator FingerDoubleTapRoutine(Transform t, System.Action onPress, float press, float tapSec, float gapSec)
     {
         Vector3 baseScale = Vector3.one;
         // 弹入亮相（0 → 1），避免手指瞬切出现
@@ -149,12 +153,150 @@ public static class TweenRunner
             for (int k = 0; k < 2; k++) // 双击两次
             {
                 yield return ScaleTo(t, press, tapSec); // 按下
+                onPress?.Invoke();                        // 按到底触发目标格水波纹
                 yield return ScaleTo(t, 1f, tapSec);    // 抬起
                 if (k == 0) { float p = 0f; while (p < 0.06f) { p += Time.deltaTime; yield return null; } } // 两下间短停顿，区分两次点击
             }
             t.localScale = baseScale;
             float g = 0f;
             while (g < gapSec) { g += Time.deltaTime; yield return null; } // 双击之间的间隔
+        }
+    }
+
+    // ===================== 场景 3.7：水波纹扩散淡出（引导关手指按下时格子上的按压波纹）=====================
+    /// <param name="g">波纹 Graphic（RoundedImage 圆形）；scale 从 fromScale 扩到 toScale，alpha 从 peakA 淡到 0。</param>
+    /// <param name="dur">扩散时长（秒）。非 exclusive——允许双击两圈波纹叠加扩散，协程自然结束不累积。</param>
+    public static void RipplePunch(Graphic g, float fromScale = 0.3f, float toScale = 1.0f, float peakA = 0.6f, float dur = 0.28f)
+    {
+        if (g == null) return;
+        Host.StartCoroutine(RippleRoutine(g, fromScale, toScale, peakA, dur));
+    }
+
+    private static IEnumerator RippleRoutine(Graphic g, float fromScale, float toScale, float peakA, float dur)
+    {
+        Transform t = g.transform;
+        t.localScale = new Vector3(fromScale, fromScale, 1f);
+        Color c = g.color; c.a = peakA; g.color = c;
+        float e = 0f;
+        while (e < dur)
+        {
+            e += Time.deltaTime;
+            float k = dur <= 0f ? 1f : Mathf.Clamp01(e / dur);
+            float s = Mathf.LerpUnclamped(fromScale, toScale, EaseOutCubic(k));
+            t.localScale = new Vector3(s, s, 1f);
+            c.a = Mathf.Lerp(peakA, 0f, EaseOutCubic(k));
+            g.color = c;
+            yield return null;
+        }
+        c.a = 0f; g.color = c;
+        t.localScale = Vector3.one;
+    }
+
+    // ===================== 场景 3.8：手指单击循环（引导关排除阶段逐格单击引导，节奏与双击一致）=====================
+    public static void FingerSingleTapLoop(Transform t, float pressScale = 0.85f, float tapMs = 120f, float gapMs = 975f)
+        => FingerSingleTapLoop(t, null, pressScale, tapMs, gapMs);
+
+    /// <param name="onPress">每次按下到底时回调（触发当前引导格水波纹）。</param>
+    public static void FingerSingleTapLoop(Transform t, System.Action onPress, float pressScale = 0.85f, float tapMs = 120f, float gapMs = 975f)
+    {
+        if (t == null) return;
+        RunExclusive(t, FingerSingleTapRoutine(t, onPress, pressScale, tapMs / 1000f, gapMs / 1000f));
+    }
+
+    private static IEnumerator FingerSingleTapRoutine(Transform t, System.Action onPress, float press, float tapSec, float gapSec)
+    {
+        Vector3 baseScale = Vector3.one;
+        t.localScale = Vector3.zero;
+        yield return ScaleTo(t, 1f, 0.25f); // 弹入亮相
+        t.localScale = baseScale;
+        while (true)
+        {
+            yield return ScaleTo(t, press, tapSec); // 按下
+            onPress?.Invoke();                        // 触发当前引导格水波纹
+            yield return ScaleTo(t, 1f, tapSec);    // 抬起
+            float g = 0f;
+            while (g < gapSec) { g += Time.deltaTime; yield return null; } // 单击之间的间隔（与双击循环间隔一致）
+        }
+    }
+
+    // ===================== 场景 3.9：手指沿路径滑动循环（引导关 Step3 滑动演示）=====================
+    /// <param name="anchors">路径节点世界坐标（finger 不旋转，世界=局部）。</param>
+    /// <param name="segMs">单段滑动时长（毫秒）——值越大滑动越慢。</param>
+    /// <param name="pauseMs">终点停顿时长（毫秒），滑动循环间隔。</param>
+    public static void FingerSwipeLoop(Transform t, Vector3[] anchors, float segMs = 520f, float pauseMs = 780f)
+    {
+        if (t == null || anchors == null || anchors.Length < 2) return;
+        RunExclusive(t, FingerSwipeRoutine(t, anchors, segMs / 1000f, pauseMs / 1000f));
+    }
+
+    private static IEnumerator FingerSwipeRoutine(Transform t, Vector3[] anchors, float segSec, float pauseSec)
+    {
+        t.localScale = Vector3.zero;
+        yield return ScaleTo(t, 1f, 0.25f); // 弹入亮相
+        t.localScale = Vector3.one;
+        t.position = anchors[0];
+        int n = anchors.Length;
+        while (true)
+        {
+            for (int i = 0; i < n - 1; i++)
+            {
+                Vector3 from = anchors[i], to = anchors[i + 1];
+                float e = 0f;
+                while (e < segSec)
+                {
+                    e += Time.deltaTime;
+                    t.position = Vector3.Lerp(from, to, EaseOutQuad(Mathf.Clamp01(e / segSec)));
+                    yield return null;
+                }
+                t.position = to;
+            }
+            float p = 0f;
+            while (p < pauseSec) { p += Time.deltaTime; yield return null; } // 终点停顿后回起点重来
+            t.position = anchors[0];
+        }
+    }
+
+    // ===================== 场景 3.10：箭头沿路径滑动循环（Step3 箭头拖尾，延迟手指 delayMs 后独立划过同一路径）=====================
+    /// <param name="anchors">与手指相同的路径节点世界坐标。</param>
+    /// <param name="delayMs">整体延迟启动时长（毫秒）——箭头比手指晚启动，之后同节奏保持固定相位差。</param>
+    public static void ArrowSwipeLoop(Transform t, Vector3[] anchors, float segMs = 520f, float pauseMs = 780f, float delayMs = 500f)
+    {
+        if (t == null || anchors == null || anchors.Length < 2) return;
+        RunExclusive(t, ArrowSwipeRoutine(t, anchors, segMs / 1000f, pauseMs / 1000f, delayMs / 1000f));
+    }
+
+    private static IEnumerator ArrowSwipeRoutine(Transform t, Vector3[] anchors, float segSec, float pauseSec, float delaySec)
+    {
+        // 箭头先隐藏，延迟 delaySec 后弹入亮相（手指已先行），再与手指同节奏循环，保持固定 0.5s 相位差
+        t.localScale = Vector3.zero;
+        t.position = anchors[0];
+        float d = 0f;
+        while (d < delaySec) { d += Time.deltaTime; yield return null; }
+        yield return ScaleTo(t, 1f, 0.25f); // 延迟后弹入亮相
+        t.localScale = Vector3.one;
+        int n = anchors.Length;
+        while (true)
+        {
+            for (int i = 0; i < n - 1; i++)
+            {
+                Vector3 from = anchors[i], to = anchors[i + 1];
+                Vector3 dir = to - from;
+                float len = dir.magnitude;
+                Vector3 ndir = len > 0.0001f ? dir / len : Vector3.right;
+                // 箭头素材原方向朝上(+y)：atan2 算出 +x 基准角后补偿 90° 对齐段方向
+                t.localRotation = Quaternion.Euler(0f, 0f, Mathf.Atan2(ndir.y, ndir.x) * Mathf.Rad2Deg - 90f);
+                float e = 0f;
+                while (e < segSec)
+                {
+                    e += Time.deltaTime;
+                    t.position = Vector3.Lerp(from, to, EaseOutQuad(Mathf.Clamp01(e / segSec)));
+                    yield return null;
+                }
+                t.position = to;
+            }
+            float p = 0f;
+            while (p < pauseSec) { p += Time.deltaTime; yield return null; }
+            t.position = anchors[0];
         }
     }
 
