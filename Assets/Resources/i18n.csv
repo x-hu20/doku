@@ -14,7 +14,8 @@ game.no_levels,No levels!
 game.all_completed,All levels completed!
 game.all_completed_title,All Levels Completed!
 game.all_complete_button,All Complete!
-game.not_cat,Not Cat!!!
+game.lives_hint_first,You have 3 lives per level.
+game.lives_hint_last,"One last attempt, make it count!"
 game.level,Level {0}
 game.level_completed,Level {0} completed!
 game.level_completed_title,Level {0} Completed!

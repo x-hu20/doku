@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -18,8 +19,41 @@ public class SaveData
     public int tipCount = 0;           // 提示道具余量
     public int levelsSinceChest = 0;   // 自上次开箱后通关数（宝箱周期）
     public bool tutorialSeen = false;  // 是否已完成 level 0 教程
+    public bool livesHintSeen = false; // 是否已展示过"首次犯错生命值提示"（全程仅一次，写档不再显示）
     public string playerId = "";       // 本地游客ID（GUID），首次启动生成，终身不变（除非清档）
     public string accountId = "";      // 预留：未来 SDK 登录的账号ID，游客态留空
+    /// <summary>上次退出后台时的在玩棋盘状态（恢复用）。levelIndex=-1 表示无在玩状态，下次按全新关卡开始。</summary>
+    public BoardState inProgress = new BoardState();
+}
+
+/// <summary>在玩棋盘的持久快照：记录已锁猫 / 普通叉号 / 错误锁定格索引与剩余血量，供退出后台后恢复。
+/// 仅保存非引导、非终态（未通关未失败）的进行中关卡；levelIndex 与当前关一致才恢复。</summary>
+[Serializable]
+public class BoardState
+{
+    public int levelIndex = -1;      // 该快照所属关卡索引；-1=无在玩状态
+    public int lives = 3;            // 退出时剩余血量（恢复血量用）
+    public List<int> lockedCats = new List<int>();   // hasCat 格索引（含 given，恢复时 LockCat 幂等）
+    public List<int> crossed = new List<int>();       // 普通叉号格索引（非错误锁定）
+    public List<int> errorLocked = new List<int>();  // 错误锁定格索引（hasCross 且 isErrorLocked）
+
+    /// <summary>确保三个列表非空（JsonUtility 反序列化时缺失字段会留 null，载入后兜底重建）。</summary>
+    public void EnsureLists()
+    {
+        if (lockedCats == null) lockedCats = new List<int>();
+        if (crossed == null) crossed = new List<int>();
+        if (errorLocked == null) errorLocked = new List<int>();
+    }
+
+    /// <summary>清空在玩状态：标记 levelIndex=-1（无快照），并清空三个索引列表。</summary>
+    public void Clear()
+    {
+        levelIndex = -1;
+        EnsureLists();
+        lockedCats.Clear();
+        crossed.Clear();
+        errorLocked.Clear();
+    }
 }
 
 public static class SaveSystem
@@ -43,6 +77,8 @@ public static class SaveSystem
                 string json = File.ReadAllText(SavePath);
                 SaveData d = JsonUtility.FromJson<SaveData>(json);
                 if (d != null) Data = d;
+                if (Data.inProgress == null) Data.inProgress = new BoardState();
+                Data.inProgress.EnsureLists();
             }
         }
         catch (Exception e)

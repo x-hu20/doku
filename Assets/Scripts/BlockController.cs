@@ -116,6 +116,16 @@ public class BlockController : MonoBehaviour, IPointerClickHandler, IPointerDown
         isErrorLocked = true;
     }
 
+    /// <summary>从存档恢复错误锁定格：置 isErrorLocked + hasCross，叉号染红（不播抖动/红框动画）。
+    /// 与 PlayErrorFeedback 的区别：后者是首次犯错时的动效；本方法仅还原持久视觉状态（红色叉号）。</summary>
+    public void RestoreErrorLocked()
+    {
+        isErrorLocked = true;
+        hasCross = true;
+        if (crossImage != null) crossImage.color = Tuning.ErrorColor;
+        ApplyVisualState();
+    }
+
     /// <summary>双击点错的完整视觉反馈：红框出现 + 横向抖动，抖动结束后红框消失、叉号染红（保留至本关结束）。
     /// 红框仅抖动期间可见，错误格的持久标识为红色叉号。锁定状态由 LockAsError 置位。</summary>
     public void PlayErrorFeedback()

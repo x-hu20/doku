@@ -56,9 +56,26 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
     [SerializeField] private Image rewardTipIcon;
     [Tooltip("奖励提示道具数量文字")]
     [SerializeField] private TMP_Text rewardTipText;
+
+    [Header("宝箱物品说明（仅宝箱关闭状态可预览宝箱内道具）")]
+    [Tooltip("问号按钮（Image+Button，摆放在宝箱上方）。仅在宝箱关闭状态显示；点击弹出物品说明小弹窗；宝箱开启状态自动隐藏")]
+    [SerializeField] private Button questionButton;
+    [Tooltip("物品说明小弹窗面板（默认隐藏，点击问号后在其上方弹出，展示宝箱内魔法棒/提示道具数量）")]
+    [SerializeField] private GameObject infoPopup;
+    [Tooltip("说明弹窗内魔法棒图标 Image（Sprite 复用 rewardMagicIcon 同款 magic_image）")]
+    [SerializeField] private Image infoMagicIcon;
+    [Tooltip("说明弹窗内魔法棒数量文字（如 ×1）")]
+    [SerializeField] private TMP_Text infoMagicText;
+    [Tooltip("说明弹窗内提示道具图标 Image（Sprite 复用 rewardTipIcon 同款 tip_image）")]
+    [SerializeField] private Image infoTipIcon;
+    [Tooltip("说明弹窗内提示道具数量文字")]
+    [SerializeField] private TMP_Text infoTipText;
     private bool _chestReady;          // 宝箱是否就绪等待点击（满10关开箱后置 true，点击后/归0置 false）
     private int _pendingRewardMagic;  // 待发放的魔法棒奖励（点击宝箱时读）
     private int _pendingRewardTip;    // 待发放的提示道具奖励
+    // 宝箱内道具配置（Show 时记录，物品说明弹窗展示用；不受开箱消费/HideReward 归0影响）
+    private int _chestRewardMagic;
+    private int _chestRewardTip;
     private Action _onRewardClosed; // 奖励遮罩退出回调（GameManager 据此归0宝箱进度）
     private Action _onRewardShown;  // 奖励遮罩弹出回调（GameManager 据此发放道具）
 
@@ -73,12 +90,24 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
         if (nextButtonText != null) nextButtonText.raycastTarget = false;
         // 奖励遮罩自身 Image 必须接收点击（退出用）；运行时确保 raycastTarget=true
         if (rewardOverlay != null) rewardOverlay.raycastTarget = true;
+        // 问号按钮：点击切换物品说明小弹窗（仅宝箱关闭状态可用）
+        if (questionButton != null)
+        {
+            questionButton.onClick.RemoveAllListeners();
+            questionButton.onClick.AddListener(ToggleChestInfo);
+        }
     }
 
     /// <summary>奖励遮罩激活时，点击弹窗任意位置（遮罩 Image 拦截 raycast）退出回结算页。
     /// 宝箱就绪（满10关开箱循环抖动）时，点击宝箱区域弹出奖励遮罩并发放道具。</summary>
     public void OnPointerClick(PointerEventData eventData)
     {
+        // 物品说明弹窗打开时，点弹窗外部（遮罩/面板背景/宝箱区域）任意位置即关闭
+        if (infoPopup != null && infoPopup.activeSelf)
+        {
+            infoPopup.SetActive(false);
+            return;
+        }
         if (rewardOverlay != null && rewardOverlay.gameObject.activeSelf)
         {
             HideReward();
@@ -148,6 +177,9 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
 
         _onRewardClosed = onRewardClosed; // 奖励遮罩退出时回调（GameManager 归0进度）
         _onRewardShown = onRewardShown;   // 奖励遮罩弹出时回调（GameManager 发放道具）
+        // 宝箱内道具配置（物品说明弹窗展示用；HideReward 归0后仍保留配置值供预览）
+        _chestRewardMagic = rewardMagic;
+        _chestRewardTip = rewardTip;
         UpdateChest(progress, chestReady, rewardMagic, rewardTip);
     }
 
@@ -181,6 +213,10 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
                 _chestReady = false;
             }
         }
+        // 问号预览：仅宝箱关闭状态显示问号；开启状态隐藏问号与说明弹窗（开启后改点宝箱本身看奖励）
+        bool showQuestion = !chestReady;
+        if (questionButton != null) questionButton.gameObject.SetActive(showQuestion);
+        if (!showQuestion && infoPopup != null) infoPopup.SetActive(false);
     }
 
     /// <summary>弹出奖励遮罩：显示魔法棒/提示图标与数量（数量 0 隐藏该项），遮罩点击任意位置退出。
@@ -210,6 +246,26 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
         UpdateChest(progress: 0, chestReady: false, rewardMagic: 0, rewardTip: 0); // 归0后重绘
     }
 
+    /// <summary>问号按钮点击：切换宝箱物品说明小弹窗（仅宝箱关闭状态可用，开启状态问号已隐藏按钮不可点）。</summary>
+    private void ToggleChestInfo()
+    {
+        if (infoPopup == null || _chestReady) return; // 宝箱开启状态不展示说明
+        bool show = !infoPopup.activeSelf;
+        if (show) FillChestInfo();
+        infoPopup.SetActive(show);
+        FeedbackManager.Instance?.Tap();
+    }
+
+    /// <summary>填充物品说明弹窗：展示宝箱内魔法棒/提示道具数量（数量 0 隐藏该项）。
+    /// 奖励取 Show 时记录的宝箱配置值，不受开箱消费/HideReward 归0影响。</summary>
+    private void FillChestInfo()
+    {
+        if (infoMagicIcon != null) infoMagicIcon.gameObject.SetActive(_chestRewardMagic > 0);
+        if (infoMagicText != null && _chestRewardMagic > 0) infoMagicText.text = "×" + _chestRewardMagic;
+        if (infoTipIcon != null) infoTipIcon.gameObject.SetActive(_chestRewardTip > 0);
+        if (infoTipText != null && _chestRewardTip > 0) infoTipText.text = "×" + _chestRewardTip;
+    }
+
     /// <summary>关闭弹窗：播放出场动画 → SetActive(false)。已隐藏时直接返回，避免对 inactive 弹窗调 AnimateHide。</summary>
     public void Hide()
     {
@@ -218,6 +274,8 @@ public class LevelCompletePopup : MonoBehaviour, IPointerClickHandler
         _chestReady = false;
         if (chestBox != null) TweenRunner.Stop(chestBox.transform); // 停宝箱循环抖动
         if (rewardOverlay != null) rewardOverlay.gameObject.SetActive(false); // 收起奖励遮罩
+        if (infoPopup != null) infoPopup.SetActive(false); // 收起物品说明弹窗
+        if (questionButton != null) questionButton.gameObject.SetActive(false); // 隐藏问号
         _animator.AnimateHide(panel, () => gameObject.SetActive(false));
     }
 

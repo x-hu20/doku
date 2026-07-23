@@ -70,6 +70,15 @@ public class LivesController : UnityEngine.MonoBehaviour
         RefreshIcons();
     }
 
+    /// <summary>从存档恢复血量：设为指定值（钳制到 [0,maxLives]）、复位归零节流、刷新血点。
+    /// 仅用于退出后台后恢复在玩关卡血量，不触发 OnLivesZero（恢复值由调用方保证 >0）。</summary>
+    public void RestoreLives(int lives)
+    {
+        _currentLives = Mathf.Clamp(lives, 0, maxLives);
+        _zeroFired = false;
+        RefreshIcons();
+    }
+
     /// <summary>刷新血点显隐：index &lt; currentLives 的亮，其余灭。
     /// 数组从左到右对应第1/2/3 条命，currentLives 减少时末尾（右侧）先灭，符合"从右边消失"。</summary>
     private void RefreshIcons()

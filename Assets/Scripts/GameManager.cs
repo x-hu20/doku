@@ -104,6 +104,10 @@ public class GameManager : MonoBehaviour
     [Tooltip("通关后，延迟多久弹出结算弹窗（秒）。应大于集体起舞时长 WaveJump≈0.48s，让猫咪起舞动画先播完再弹窗，避免弹窗瞬间盖住")]
     [SerializeField] private float completePopupDelay = 0.5f;
 
+    [Header("前4关失败保护")]
+    [Tooltip("前 N 关内：每关第一次失败，失败页只弹 restart；第二次及之后才正常弹 3 more lives + restart。第 N 关起不再保护（默认 4，覆盖 level 0~3）。")]
+    [SerializeField] private int protectedLevelCount = 4;
+
     // ====== 单击/双击/滑动 协调状态 ======
     private bool isPointerDown;            // 当前是否处于按下（可能滑动）状态
     private bool hasSlid;                  // 本次按下是否已滑到其他格子（滑动收尾时据此抑制 click）
@@ -119,6 +123,11 @@ public class GameManager : MonoBehaviour
     private Coroutine completePopupRoutine; // 延迟弹出结算弹窗的协程（待集体起舞播完再弹，用于切关时先停掉）
     private bool isLevelCompleted;    // 本关已通关：起舞/按钮弹出期间锁定棋盘输入，避免制造新错误格与"已通关"冲突
     private bool isLevelFailed;       // 本关已失败：血量归零后锁定棋盘输入，与 isLevelCompleted 互斥（PRD §7.5）
+
+    // 前3关失败保护计数（会话内、每关独立）：仅记最近一关的失败次数，切关重置、restart 同关不重置。
+    // _failCountLevelIndex != currentLevelIndex 时视为进入新关，计数归零。
+    private int _failCountLevelIndex = -1;
+    private int _currentLevelFailCount;
 
     // 棋盘布局组件缓存（Start 一次取，避免每关 GetComponent）
     private GridLayoutGroup gridLayout;
@@ -214,6 +223,108 @@ public class GameManager : MonoBehaviour
         SaveSystem.Data.tipCount = inventory.TipCount;
         SaveSystem.Data.levelsSinceChest = inventory.LevelsSinceChest;
         SaveSystem.Save();
+    }
+
+    // ================= 在玩棋盘状态持久化（退出后台恢复）=================
+    // 退出后台/退出应用时把当前棋盘快照写入 SaveData.inProgress，下次启动 LoadLevel 时若关号一致则恢复。
+    // 仅快照非引导、非终态（未通关未失败）的进行中关卡；通关/失败时清空快照，避免恢复终态棋盘。
+
+    /// <summary>应用进入后台（移动端 OnApplicationPause(true)）/ 退出（OnApplicationQuit）时调用：
+    /// 捕获当前棋盘快照并写档。终态/引导关跳过捕获并清空快照。</summary>
+    private void OnApplicationPause(bool paused)
+    {
+        if (paused) CaptureAndPersistBoard();
+    }
+
+    private void OnApplicationQuit()
+    {
+        CaptureAndPersistBoard();
+    }
+
+    /// <summary>捕获当前棋盘状态到 SaveData.inProgress 并写档。
+    /// 引导关 / 已通关 / 已失败：清空快照（不恢复终态）。否则记录关号 + 血量 + 已锁猫/叉号/错误锁定格。</summary>
+    private void CaptureAndPersistBoard()
+    {
+        if (isTutorial || isLevelCompleted || isLevelFailed || allBlocks == null || allBlocks.Count == 0)
+        {
+            ClearInProgressBoard();
+            SaveSystem.Save();
+            return;
+        }
+        BoardState s = SaveSystem.Data.inProgress;
+        if (s == null) { s = new BoardState(); SaveSystem.Data.inProgress = s; }
+        s.EnsureLists();
+        s.levelIndex = currentLevelIndex;
+        s.lives = livesController != null ? livesController.CurrentLives : 3;
+        s.lockedCats.Clear();
+        s.crossed.Clear();
+        s.errorLocked.Clear();
+        for (int i = 0; i < allBlocks.Count; i++)
+        {
+            BlockController b = allBlocks[i];
+            if (b == null) continue;
+            if (b.hasCat) s.lockedCats.Add(i);          // 已锁猫（含 given）
+            else if (b.isErrorLocked) s.errorLocked.Add(i); // 错误锁定格（hasCross 且染红）
+            else if (b.hasCross) s.crossed.Add(i);        // 普通叉号格
+        }
+        SaveSystem.Save();
+    }
+
+    /// <summary>清空在玩棋盘快照（标记为无在玩状态）。通关/失败/终态捕获时调用，避免下次恢复终态棋盘。</summary>
+    private void ClearInProgressBoard()
+    {
+        if (SaveSystem.Data.inProgress == null) SaveSystem.Data.inProgress = new BoardState();
+        SaveSystem.Data.inProgress.Clear();
+    }
+
+    /// <summary>从存档恢复在玩棋盘（LoadLevel 生成格子并放置 given 后调用）。
+    /// 仅当快照关号 == 当前关、血量 >0 时恢复：还原血量 + 已锁猫 + 普通叉号 + 错误锁定格。
+    /// 引导关不恢复（教程流程由 TutorialController 脚本驱动）。恢复均无声（ApplyVisualState），不播动画。</summary>
+    private void RestoreBoardStateIfAny()
+    {
+        if (isTutorial) return;
+        BoardState s = SaveSystem.Data.inProgress;
+        if (s == null || s.levelIndex != currentLevelIndex || s.lives <= 0) return;
+
+        // 恢复血量（ResetLives 已先回满，此处覆盖为退出时的值，杜绝"退出刷血"漏洞）
+        if (livesController != null) livesController.RestoreLives(s.lives);
+
+        // 恢复已锁猫：hasCat + ApplyVisualState + levelState.LockCat（given 已锁，幂等不重复计数）
+        if (s.lockedCats != null)
+        {
+            foreach (int idx in s.lockedCats)
+            {
+                if (idx < 0 || idx >= allBlocks.Count) continue;
+                BlockController b = allBlocks[idx];
+                if (b == null) continue;
+                b.hasCat = true;
+                b.ApplyVisualState();
+                levelState.LockCat(idx);
+            }
+        }
+        // 恢复普通叉号格
+        if (s.crossed != null)
+        {
+            foreach (int idx in s.crossed)
+            {
+                if (idx < 0 || idx >= allBlocks.Count) continue;
+                BlockController b = allBlocks[idx];
+                if (b == null) continue;
+                b.hasCross = true;
+                b.ApplyVisualState();
+            }
+        }
+        // 恢复错误锁定格（hasCross + isErrorLocked + 叉号染红，无动效）
+        if (s.errorLocked != null)
+        {
+            foreach (int idx in s.errorLocked)
+            {
+                if (idx < 0 || idx >= allBlocks.Count) continue;
+                BlockController b = allBlocks[idx];
+                if (b == null) continue;
+                b.RestoreErrorLocked();
+            }
+        }
     }
 
     // 失败弹窗显示时屏蔽 Android 物理返回键 / Escape：玩家只能点 restart / 3 more lives，
@@ -369,6 +480,14 @@ public class GameManager : MonoBehaviour
         // 第1关失败点 restart 会 LoadLevel(0) 误回教程。越界路径上方已 yield break，不会污染。
         currentLevelIndex = index;
 
+        // 前3关失败保护：切到不同关时重置本关失败计数（restart 同关 index 不变，计数保留，
+        // 故同一关第二次失败仍能触发"3 more lives + restart"）。
+        if (_failCountLevelIndex != index)
+        {
+            _failCountLevelIndex = index;
+            _currentLevelFailCount = 0;
+        }
+
         // 回收当前格子入对象池（不销毁），交互瞬间失效，防止异步期间玩家连点
         foreach (BlockController bc in allBlocks)
         {
@@ -492,6 +611,10 @@ public class GameManager : MonoBehaviour
                 levelState.LockCat(idx); // given 已锁，计入已锁数与阵营/沿解校验基准
             }
         }
+
+        // 从存档恢复在玩棋盘（退出后台回到上次状态）：还原血量/已锁猫/叉号/错误锁定格。
+        // 无快照或关号不一致则跳过（全新棋盘）。given 已在上文放置，恢复时 LockCat 幂等。
+        RestoreBoardStateIfAny();
 
         UpdateStatusText();
 
@@ -772,11 +895,12 @@ public class GameManager : MonoBehaviour
             block.ApplyVisualState();
             block.LockAsError();        // 本关锁定，不再响应点击（关卡不消失、不可点）
             block.PlayErrorFeedback();  // 红框出现 + 抖动，结束后红框消失、叉号染红
-            ShowErrorHint();            // HUD 强切 "Not Cat!!!" 并放大回弹
             FeedbackManager.Instance?.Error(); // 错误音效 + 触觉
-            // 扣血放最后：最后一次犯错的完整单格错误反馈已播完，再扣血/触发失败（PRD F7）。
-            // LoseLife 内部归零时经 OnLivesZero 事件触发 HandleLevelFailed，本处不直接判失败。
+            // 扣血：单格错误反馈（抖动/红框/音效）已发射，再扣血/触发失败（PRD F7）。
+            // LoseLife 归零时经 OnLivesZero 事件触发 HandleLevelFailed，本处不直接判失败。
             if (livesController != null) livesController.LoseLife();
+            // 扣血后按剩余血量在 HUD 显示生命值提示，随后恢复为猫猫进度（替代旧 "Not Cat!!!"）
+            ShowLivesHint();
         }
     }
 
@@ -796,16 +920,34 @@ public class GameManager : MonoBehaviour
     }
 
 
-    // 错误提示：ProgressText 临时显示并放大回弹，随后恢复进度文本
-    private void ShowErrorHint()
+    /// <summary>双击错误格扣血后，按剩余血量在 progressText 显示生命值提示，随后恢复为猫猫进度。
+    /// 规则：1) 当次扣血后只剩 1 点 → "One last attempt, make it count!"（每次只剩1点都显示，非每关）；
+    /// 2) 否则若是首次犯错扣血 → "You have 3 lives per level."（全程仅一次，写档后不再显示）；
+    /// 3) 其余情况不提示，直接刷回进度文本。死亡（扣血归零）落入情况 3，随后由失败弹窗接管。
+    /// 依赖扣血在前：读 livesController.CurrentLives 为扣血后的实际值，规避 losePerMistake 配置差异。</summary>
+    private void ShowLivesHint()
     {
-        if (progressText != null)
+        if (progressText == null) return;
+        int lives = livesController != null ? livesController.CurrentLives : 0;
+
+        string hintKey = null;
+        if (lives == 1)
         {
-            progressText.text = I18n.Get("game.not_cat");
-            TweenRunner.TextPunch(progressText.transform); // 顶部 HUD 文本放大回弹
-            if (errorHintRoutine != null) StopCoroutine(errorHintRoutine);
-            errorHintRoutine = StartCoroutine(RestoreStatusAfter(errorHintDuration));
+            hintKey = "game.lives_hint_last"; // 只剩1点：每次都提示（非每关）
         }
+        else if (!SaveSystem.Data.livesHintSeen)
+        {
+            hintKey = "game.lives_hint_first"; // 首次犯错：全程仅一次
+            SaveSystem.Data.livesHintSeen = true;
+            SaveSystem.Save();
+        }
+
+        if (hintKey == null) { UpdateStatusText(); return; } // 其余时间：展示猫猫解出进度
+
+        progressText.text = I18n.Get(hintKey);
+        TweenRunner.TextPunch(progressText.transform); // 顶部 HUD 文本放大回弹
+        if (errorHintRoutine != null) StopCoroutine(errorHintRoutine);
+        errorHintRoutine = StartCoroutine(RestoreStatusAfter(errorHintDuration));
     }
 
     private IEnumerator RestoreStatusAfter(float delay)
@@ -895,6 +1037,7 @@ public class GameManager : MonoBehaviour
     private void HandleLevelFailed()
     {
         isLevelFailed = true; // 锁棋盘输入（HandlePointerDown 已拦截）
+        ClearInProgressBoard(); // 失败：清空在玩快照，下次启动该关从全新棋盘开始（不恢复 0 血终态）
 
         // 取消进行中的交互协程，避免失败时残留补间/提示与弹窗打架（PRD F10）
         CancelPendingToggle();
@@ -907,15 +1050,20 @@ public class GameManager : MonoBehaviour
         // 失败音效 + 触觉：延迟到当前格子 errorClip 播完再播 failClip，避免与双击点错的 Error 叠加（PRD F19/§6）
         FeedbackManager.Instance?.FailAfterErrorClip();
 
-        // 延迟显示失败弹窗：等最后一次犯错的单格错误反馈（抖动 0.4s / 红框 / 音效 / HUD"Not Cat!!!"）播完再弹，
+        // 延迟显示失败弹窗：等最后一次犯错的单格错误反馈（抖动 0.4s / 红框 / 音效 / HUD 生命值提示）播完再弹，
         // 避免弹窗瞬间盖住反馈。延迟期间 isLevelFailed 已锁棋盘，玩家完整看到最后一次犯错的反馈。
         if (failPopup != null)
         {
-            var config = new ModalConfig(I18n.Get("modal.level_failed.title"), new List<ModalButtonDef>
-            {
-                new ModalButtonDef(I18n.Get("modal.level_failed.revive"), OnReviveRequested),
-                new ModalButtonDef(I18n.Get("modal.level_failed.restart"), OnRestartRequested),
-            });
+            // 前4关保护：前 protectedLevelCount 关内每关第一次失败只弹 restart，第二次及之后才弹 3 more lives + restart。
+            // 计数会话内、每关独立（切关重置，restart 同关不重置）。第 protectedLevelCount 关起不再保护。
+            bool restartOnly = currentLevelIndex < protectedLevelCount && _currentLevelFailCount == 0;
+            _currentLevelFailCount++;
+
+            var buttons = new List<ModalButtonDef>();
+            if (!restartOnly)
+                buttons.Add(new ModalButtonDef(I18n.Get("modal.level_failed.revive"), OnReviveRequested));
+            buttons.Add(new ModalButtonDef(I18n.Get("modal.level_failed.restart"), OnRestartRequested));
+            var config = new ModalConfig(I18n.Get("modal.level_failed.title"), buttons);
             if (failPopupRoutine != null) StopCoroutine(failPopupRoutine);
             failPopupRoutine = StartCoroutine(ShowFailPopupAfter(failPopupDelay, config));
         }
@@ -986,6 +1134,7 @@ public class GameManager : MonoBehaviour
         if (correctCount == gridSize && IsAnySolutionSatisfied())
         {
             isLevelCompleted = true; // 锁定棋盘输入：起舞/按钮弹出期间不处理状态变更
+            ClearInProgressBoard(); // 通关：清空在玩快照，下次启动不恢复已通关棋盘（resumeLevel 已写为下一关）
             // 通关起舞期间道具按钮保持正常颜色（不置灰），点击由 UseMagicWand/UseTip 的
             // isLevelCompleted 拦截（轻触反馈+不执行）阻断，进入下一关时自然恢复。
             // 阶段宝箱：本关通关计入进度，满10关标记开箱展示。
