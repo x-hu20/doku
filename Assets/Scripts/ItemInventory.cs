@@ -115,16 +115,19 @@ public class ItemInventory
         RaiseChanged();
     }
 
-    /// <summary>宝箱打开（奖励遮罩弹出）时发放道具并刷新红点。</summary>
+    /// <summary>宝箱打开（奖励遮罩弹出）时发放道具并归0宝箱进度（下一轮从0计）。
+    /// 进度归0与发放同步落盘：避免玩家领奖后未关闭遮罩即退出后台，levelsSinceChest 未归0，
+    /// 下关结算页仍显示宝箱待开启（领取看似失败）。发放是同步 Persist，退出前已写盘。</summary>
     public void GrantChestReward()
     {
         magicWandCount += chestRewardMagic;
         tipCount += chestRewardTip;
+        levelsSinceChest = 0; // 归0宝箱进度：发放即归0，与遮罩关闭解耦（关闭路径 OnRewardClosed 幂等兜底）
         RefreshBadges();
         RaiseChanged();
     }
 
-    /// <summary>奖励遮罩退出后归0进度（下次结算页起从0格）。</summary>
+    /// <summary>奖励遮罩退出时归0进度（兜底；主归0已在 GrantChestReward 发放时完成，此处 0→0 幂等）。</summary>
     public void OnRewardClosed()
     {
         levelsSinceChest = 0;

@@ -192,6 +192,7 @@ public class GameManager : MonoBehaviour
             magicWandBadge, magicWandBadgeText, tipBadge, tipBadgeText);
         inventory.OnChanged += Persist; // 道具扣减/广告+1/宝箱进度变更触发写档
         currentLevelIndex = fresh ? 0 : Mathf.Clamp(SaveSystem.Data.currentLevel, 0, loadedLevels.Count - 1);
+        _resumeLevel = currentLevelIndex; // 恢复关初始=当前关；切关/通关时由 Persist(int) 同步推进
 
         // 欢迎页（slogan+加载进度条+游客ID）覆盖显示，完成后进起始关卡（首次教程 / 老玩家上次关）
         if (welcomeController != null)
@@ -210,13 +211,20 @@ public class GameManager : MonoBehaviour
         if (welcomeController != null) welcomeController.Hide();
     }
 
+    // 下次启动应恢复的关卡。通常=currentLevelIndex（切关后同步）；通关后=下一关（与 currentLevelIndex 解耦）。
+    // 单独字段的原因：通关时 currentLevelIndex 仍=通关关（棋盘未切、结算页在显示），但恢复关需=下一关。
+    // 若用 currentLevelIndex 作恢复关，此后道具扣减/宝箱领奖触发的无参 Persist() 会把 currentLevel 拉回通关关，
+    // 导致"通关→退出后台→再进入"回退到已通关关卡的初始状态。_resumeLevel 由 Persist(int) 同步推进。
+    private int _resumeLevel;
+
     /// <summary>把 live 状态写回存档并保存。resumeLevel 为"下次启动应恢复的关卡"：
     /// 通常= currentLevelIndex（切关/道具变更）；通关时= 下一关（min(currentLevelIndex+1, Count-1)），避免重启重玩刚通关的关。
     /// tutorialSeen 由 TutorialController 写入。</summary>
-    private void Persist() => Persist(currentLevelIndex);
+    private void Persist() => Persist(_resumeLevel);
 
     private void Persist(int resumeLevel)
     {
+        _resumeLevel = resumeLevel; // 同步恢复关：后续无参 Persist() 用此值，而非 currentLevelIndex（通关后二者不同）
         SaveSystem.Data.currentLevel = resumeLevel;
         if (resumeLevel > SaveSystem.Data.highestUnlocked) SaveSystem.Data.highestUnlocked = resumeLevel;
         SaveSystem.Data.magicWandCount = inventory.MagicWandCount;
@@ -623,7 +631,9 @@ public class GameManager : MonoBehaviour
             tutorialController.StartTutorial(this);
 
         // 关卡载入完成：持久化 currentLevel/highestUnlocked（启动恢复与关卡选择用）
-        Persist();
+        // 显式带 currentLevelIndex（=index，本函数开头已设）：经 Persist(int) 同步推进 _resumeLevel，
+        // 供后续道具/宝箱触发的无参 Persist() 使用
+        Persist(currentLevelIndex);
     }
 
     // ================= 单击/双击/滑动 交互协调 =================
